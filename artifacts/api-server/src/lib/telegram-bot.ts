@@ -1,6 +1,7 @@
 import { logger } from "./logger";
 import { checkUrl } from "./risk-engine";
 import { generateAiRecommendation } from "./ai-recommendation";
+import { checkRateLimit, timeUntilResetText } from "./rate-limiter";
 
 const BOT_TOKEN = process.env["TELEGRAM_BOT_TOKEN"];
 const CHANNEL_ID = process.env["OPENCLAW_CHANNEL_ID"];
@@ -130,7 +131,7 @@ export async function handleStart(chatId: number, firstName: string): Promise<vo
 
 // ─── Проверка ссылки через AI ─────────────────────────────────────────────────
 
-async function handleLinkCheck(chatId: number, rawUrl: string): Promise<void> {
+async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""): Promise<void> {
   await sendTyping(chatId);
 
   // Стартовое сообщение
@@ -157,7 +158,8 @@ async function handleLinkCheck(chatId: number, rawUrl: string): Promise<void> {
       `<code>${risk.normalizedUrl}</code>\n\n` +
       `${aiText}\n\n` +
       `━━━━━━━━━━━━━━━━\n` +
-      `📢 Больше советов по безопасности: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>`;
+      `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>` +
+      footerHint;
 
     await sendMessage(chatId, responseText, {
       reply_markup: MAIN_KEYBOARD,
@@ -254,7 +256,34 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     // Попытка найти URL в сообщении
     const url = extractUrl(text);
     if (url) {
-      await handleLinkCheck(chatId, url);
+      const userId = from?.id ?? chatId;
+      const rate = checkRateLimit(userId);
+
+      if (!rate.allowed) {
+        await sendMessage(
+          chatId,
+          `⏳ <b>Лимит на сегодня исчерпан</b>\n\n` +
+          `Ты уже проверил ${rate.limit} ссылок за сегодня — это максимум для одного аккаунта в сутки.\n\n` +
+          `Счётчик обнулится <b>${timeUntilResetText()}</b> (в полночь по UTC).\n\n` +
+          `Пока что можешь почитать советы по безопасности в канале 👇`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📢 Канал @bezstrahavseti", url: "https://t.me/bezstrahavseti" }],
+              ],
+            },
+          }
+        );
+        logger.info({ userId, limit: rate.limit }, "Rate limit exceeded");
+        return;
+      }
+
+      // Показываем остаток только когда мало осталось (≤ 5)
+      const footerHint = rate.remaining <= 5
+        ? `\n\n💡 Осталось проверок на сегодня: <b>${rate.remaining}</b>`
+        : "";
+
+      await handleLinkCheck(chatId, url, footerHint);
       return;
     }
 
