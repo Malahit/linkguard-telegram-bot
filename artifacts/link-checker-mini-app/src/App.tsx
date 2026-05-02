@@ -9,6 +9,7 @@ import Result from "@/pages/Result";
 import History from "@/pages/History";
 import Settings from "@/pages/Settings";
 import About from "@/pages/About";
+import Admin from "@/pages/Admin";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ function Router() {
         <Route path="/history" component={History} />
         <Route path="/about" component={About} />
         <Route path="/settings" component={Settings} />
+        <Route path="/admin" component={Admin} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

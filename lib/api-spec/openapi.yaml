@@ -14,6 +14,8 @@ tags:
     description: Link checking operations
   - name: users
     description: User settings and profile
+  - name: admin
+    description: Admin operations
 paths:
   /healthz:
     get:
@@ -164,6 +166,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserProfile"
+
+  /admin/reports:
+    get:
+      operationId: getAdminReports
+      tags: [admin]
+      summary: Get pending URL reports
+      responses:
+        "200":
+          description: List of pending reports
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminReportsResponse"
+
+  /admin/reports/{id}:
+    patch:
+      operationId: updateReportStatus
+      tags: [admin]
+      summary: Update report status (confirm or dismiss)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateReportStatusBody"
+      responses:
+        "200":
+          description: Report updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateReportStatusResponse"
 
 components:
   schemas:
@@ -381,3 +421,67 @@ components:
         - telegramUserId
         - firstName
         - createdAt
+
+    UrlReport:
+      type: object
+      properties:
+        id:
+          type: integer
+        reportedByTelegramId:
+          type: string
+        reportedByUsername:
+          type: string
+          nullable: true
+        url:
+          type: string
+        comment:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, reviewed, confirmed, dismissed]
+        reportedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - reportedByTelegramId
+        - url
+        - status
+        - reportedAt
+
+    AdminReportsResponse:
+      type: object
+      properties:
+        pendingCount:
+          type: integer
+        reports:
+          type: array
+          items:
+            $ref: "#/components/schemas/UrlReport"
+      required:
+        - pendingCount
+        - reports
+
+    UpdateReportStatusBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [reviewed, confirmed, dismissed]
+      required:
+        - status
+
+    UpdateReportStatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        id:
+          type: integer
+        status:
+          type: string
+      required:
+        - success
+        - id
+        - status

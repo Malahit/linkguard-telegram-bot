@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { sendToChannel } from "../lib/telegram-bot";
 import { getPostForDay, formatPost } from "../lib/posts-pool";
-import { getPendingReports, getPendingCount } from "../lib/report-store";
+import { getPendingReports, getPendingCount, updateReportStatus } from "../lib/report-store";
 
 const router: IRouter = Router();
 
@@ -23,6 +23,23 @@ router.get("/admin/reports", async (_req, res): Promise<void> => {
     getPendingCount(),
   ]);
   res.json({ pendingCount, reports });
+});
+
+router.patch("/admin/reports/:id", async (req, res): Promise<void> => {
+  const id = Number(req.params["id"]);
+  const { status } = req.body as { status: string };
+
+  if (!id || !["reviewed", "confirmed", "dismissed"].includes(status)) {
+    res.status(400).json({ success: false, id, status, message: "Invalid id or status" });
+    return;
+  }
+
+  const ok = await updateReportStatus(id, status as "reviewed" | "confirmed" | "dismissed");
+  if (ok) {
+    res.json({ success: true, id, status });
+  } else {
+    res.status(500).json({ success: false, id, status, message: "Failed to update" });
+  }
 });
 
 export default router;

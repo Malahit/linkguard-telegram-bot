@@ -1,6 +1,9 @@
 import { Link, useLocation } from "wouter";
-import { Home, Clock, Settings, BookOpen } from "lucide-react";
+import { Home, Clock, Settings, BookOpen, ShieldAlert } from "lucide-react";
 import { ReactNode } from "react";
+import { useTelegram } from "@/lib/telegram";
+
+const ADMIN_TELEGRAM_ID = "1397648029";
 
 export function Layout({ children }: { children: ReactNode }) {
   return (
@@ -43,12 +46,15 @@ function AppHeader() {
 
 function BottomNav() {
   const [location] = useLocation();
+  const { telegramUserId } = useTelegram();
+  const isAdmin = telegramUserId === ADMIN_TELEGRAM_ID;
 
   const navItems = [
     { path: "/", icon: Home, label: "Главная" },
     { path: "/history", icon: Clock, label: "История" },
     { path: "/about", icon: BookOpen, label: "О проекте" },
     { path: "/settings", icon: Settings, label: "Настройки" },
+    ...(isAdmin ? [{ path: "/admin", icon: ShieldAlert, label: "Репорты" }] : []),
   ];
 
   if (location === "/result") return null;

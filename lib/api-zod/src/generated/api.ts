@@ -140,3 +140,38 @@ export const RegisterUserResponse = zod.object({
   username: zod.string().nullish(),
   createdAt: zod.coerce.date(),
 });
+
+/**
+ * @summary Get pending URL reports
+ */
+export const GetAdminReportsResponse = zod.object({
+  pendingCount: zod.number(),
+  reports: zod.array(
+    zod.object({
+      id: zod.number(),
+      reportedByTelegramId: zod.string(),
+      reportedByUsername: zod.string().nullish(),
+      url: zod.string(),
+      comment: zod.string().nullish(),
+      status: zod.enum(["pending", "reviewed", "confirmed", "dismissed"]),
+      reportedAt: zod.coerce.date(),
+    }),
+  ),
+});
+
+/**
+ * @summary Update report status (confirm or dismiss)
+ */
+export const UpdateReportStatusParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const UpdateReportStatusBody = zod.object({
+  status: zod.enum(["reviewed", "confirmed", "dismissed"]),
+});
+
+export const UpdateReportStatusResponse = zod.object({
+  success: zod.boolean(),
+  id: zod.number(),
+  status: zod.string(),
+});
