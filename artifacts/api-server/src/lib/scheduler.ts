@@ -1,30 +1,46 @@
 import cron from "node-cron";
 import { logger } from "./logger";
 import { sendToChannel } from "./telegram-bot";
-import { getPostForDay, formatPost, formatDangerAlert } from "./posts-pool";
+import { getPostForDate, formatPost, formatDangerAlert, getRubricForDate } from "./posts-pool";
 import { db, linkChecksTable } from "@workspace/db";
 import { eq, sql, and, gt } from "drizzle-orm";
 
-// Track which danger URLs we've already alerted about (in-memory, resets on restart)
 const alertedUrls = new Set<string>();
 
+const RUBRIC_LABEL: Record<string, string> = {
+  hygiene:   "🧼 Гигиена",
+  breakdown: "🎣 Разбор",
+  tool:      "🛠 Инструмент",
+  quiz:      "🧪 Проверь себя",
+  story:     "📖 История",
+};
+
 export function startScheduler(): void {
-  // Daily post at 10:00 Moscow time (UTC+3 = 07:00 UTC)
+  // Daily post at 10:00 Moscow time (UTC+3 → 07:00 UTC)
   cron.schedule(
     "0 7 * * *",
     async () => {
-      logger.info("Scheduler: sending daily hygiene post");
-      const post = getPostForDay();
+      const now = new Date();
+      const rubric = getRubricForDate(now);
+      const post = getPostForDate(now);
       const text = formatPost(post);
+
+      logger.info({ rubric, title: post.title }, `Scheduler: sending daily post [${RUBRIC_LABEL[rubric]}]`);
+
       const ok = await sendToChannel(text);
       if (ok) {
-        logger.info({ title: post.title }, "Daily post sent to channel");
+        logger.info({ rubric, title: post.title }, "Daily post sent to channel");
       }
     },
     { timezone: "UTC" }
   );
 
-  logger.info("Scheduler started — daily posts at 10:00 MSK");
+  const today = new Date();
+  const rubric = getRubricForDate(today);
+  logger.info(
+    { rubric: RUBRIC_LABEL[rubric] },
+    "Scheduler started — daily posts at 10:00 MSK"
+  );
 }
 
 export async function checkAndAlertDangerousUrl(
@@ -35,10 +51,11 @@ export async function checkAndAlertDangerousUrl(
   if (alertedUrls.has(normalizedUrl)) return;
 
   try {
-    // Extract domain for grouping (avoid counting subpaths separately)
     let domain = normalizedUrl;
     try {
-      domain = new URL(normalizedUrl.startsWith("http") ? normalizedUrl : `https://${normalizedUrl}`).hostname;
+      domain = new URL(
+        normalizedUrl.startsWith("http") ? normalizedUrl : `https://${normalizedUrl}`
+      ).hostname;
     } catch {
       // keep as-is
     }
