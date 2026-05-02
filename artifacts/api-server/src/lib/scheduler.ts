@@ -27,7 +27,9 @@ export function startScheduler(): void {
 
       logger.info({ rubric, title: post.title }, `Scheduler: sending daily post [${RUBRIC_LABEL[rubric]}]`);
 
-      const ok = await sendToChannel(text);
+      const ok = await sendToChannel(text, [
+        [{ text: "🔗 Проверить ссылку", url: "https://t.me/chistyi_signal_bot" }],
+      ]);
       if (ok) {
         logger.info({ rubric, title: post.title }, "Daily post sent to channel");
       }

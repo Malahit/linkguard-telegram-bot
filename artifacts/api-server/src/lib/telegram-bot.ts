@@ -76,7 +76,10 @@ async function sendTyping(chatId: number): Promise<void> {
 
 // ─── Отправка в канал ────────────────────────────────────────────────────────
 
-export async function sendToChannel(text: string): Promise<boolean> {
+export async function sendToChannel(
+  text: string,
+  inlineKeyboard?: { text: string; url: string }[][]
+): Promise<boolean> {
   if (!isConfigured()) {
     logger.warn("Telegram bot not configured — missing TELEGRAM_BOT_TOKEN or OPENCLAW_CHANNEL_ID");
     return false;
@@ -87,6 +90,7 @@ export async function sendToChannel(text: string): Promise<boolean> {
       text,
       parse_mode: "HTML",
       disable_web_page_preview: true,
+      ...(inlineKeyboard ? { reply_markup: { inline_keyboard: inlineKeyboard } } : {}),
     });
     if (!data.ok) {
       logger.error({ description: data.description }, "Telegram channel post error");
