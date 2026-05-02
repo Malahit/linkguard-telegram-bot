@@ -1,0 +1,47 @@
+FROM node:24-alpine AS base
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+
+# Install dependencies
+FROM base AS deps
+COPY package.json pnpm-workspace.yaml ./
+COPY artifacts/api-server/package.json ./artifacts/api-server/
+COPY lib/api-zod/package.json ./lib/api-zod/
+COPY lib/db/package.json ./lib/db/
+COPY scripts/package.json ./scripts/
+# Dummy packages so pnpm workspace resolves correctly
+COPY lib/api-client-react/package.json ./lib/api-client-react/
+COPY lib/api-spec/package.json ./lib/api-spec/
+RUN pnpm install --frozen-lockfile --filter @workspace/api-server... 2>/dev/null || pnpm install --filter @workspace/api-server...
+
+# Build libs
+FROM deps AS builder
+COPY tsconfig.base.json tsconfig.json ./
+COPY lib/ ./lib/
+COPY artifacts/api-server/ ./artifacts/api-server/
+RUN pnpm --filter @workspace/api-server run build
+
+# Run migrations and start
+FROM node:24-alpine AS runner
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+
+COPY package.json pnpm-workspace.yaml ./
+COPY artifacts/api-server/package.json ./artifacts/api-server/
+COPY lib/api-zod/package.json ./lib/api-zod/
+COPY lib/db/package.json ./lib/db/
+COPY scripts/package.json ./scripts/
+COPY lib/api-client-react/package.json ./lib/api-client-react/
+COPY lib/api-spec/package.json ./lib/api-spec/
+
+RUN pnpm install --frozen-lockfile --prod --filter @workspace/api-server... 2>/dev/null || pnpm install --prod --filter @workspace/api-server...
+
+COPY --from=builder /app/artifacts/api-server/dist ./artifacts/api-server/dist
+COPY lib/db/drizzle.config.ts ./lib/db/
+COPY lib/db/src/ ./lib/db/src/
+
+ENV NODE_ENV=production
+ENV PORT=8080
+
+EXPOSE 8080
+CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
