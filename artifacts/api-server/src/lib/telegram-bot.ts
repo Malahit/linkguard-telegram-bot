@@ -111,30 +111,20 @@ export async function handleStart(chatId: number, firstName: string): Promise<vo
   const text =
     `👋 Привет${name}!\n\n` +
     `Я — бот <b>OpenClaw</b>, твой помощник по цифровой безопасности.\n\n` +
-    `🔗 Нажми кнопку <b>«Проверить ссылку»</b> внизу и отправь мне любую подозрительную ссылку — ` +
-    `я проверю её и расскажу человеческим языком, что это такое и стоит ли её открывать.\n\n` +
+    `🔗 Просто отправь мне любую подозрительную ссылку — я мгновенно проверю её и скажу человеческим языком: безопасно, осторожно или опасно.\n\n` +
+    `<b>Как использовать:</b>\n` +
+    `Нажми кнопку <b>«🔗 Проверить ссылку»</b> внизу — или просто вставь адрес прямо в чат.\n\n` +
     `📢 Каждый день в канале <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a> — ` +
-    `советы по цифровой гигиене, разборы мошеннических схем и полезные инструменты.`;
-
-  const inlineKeyboard = {
-    inline_keyboard: [
-      ...(MINIAPP_URL
-        ? [[{ text: "🔗 Открыть LinkGuard (мини-апп)", web_app: { url: MINIAPP_URL } }]]
-        : []),
-      [{ text: "📢 Канал @bezstrahavseti", url: "https://t.me/bezstrahavseti" }],
-    ],
-  };
+    `советы по цифровой гигиене и разборы мошеннических схем.`;
 
   await sendMessage(chatId, text, {
-    reply_markup: MAIN_KEYBOARD,
+    reply_markup: {
+      ...MAIN_KEYBOARD,
+      inline_keyboard: [
+        [{ text: "📢 Подписаться на канал", url: "https://t.me/bezstrahavseti" }],
+      ],
+    },
   });
-
-  // Небольшая задержка — потом инлайн-кнопки
-  if (inlineKeyboard.inline_keyboard.length > 0) {
-    await sendMessage(chatId, "Или открой мини-апп для полноценного интерфейса:", {
-      reply_markup: inlineKeyboard,
-    });
-  }
 }
 
 // ─── Проверка ссылки через AI ─────────────────────────────────────────────────
@@ -176,7 +166,7 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
     logger.error({ err, rawUrl }, "Link check failed in bot");
     await sendMessage(
       chatId,
-      "❌ Не удалось проверить ссылку. Попробуй ещё раз или воспользуйся мини-аппом.",
+      "❌ Не удалось проверить ссылку. Попробуй ещё раз — просто отправь адрес заново.",
       { reply_markup: MAIN_KEYBOARD }
     );
   }
@@ -250,12 +240,13 @@ function extractUrl(text: string): string | null {
 export async function handleHelp(chatId: number): Promise<void> {
   const text =
     `<b>Как пользоваться OpenClaw:</b>\n\n` +
-    `1️⃣ Нажми кнопку <b>«🔗 Проверить ссылку»</b> внизу\n` +
-    `2️⃣ Отправь мне ссылку которую хочешь проверить\n` +
-    `3️⃣ Получишь подробный разбор от AI — что это, безопасно ли и что делать\n\n` +
+    `1️⃣ Нажми кнопку <b>«🔗 Проверить ссылку»</b> внизу экрана\n` +
+    `2️⃣ Вставь ссылку которую хочешь проверить и отправь\n` +
+    `3️⃣ Получишь разбор от AI — что это за сайт, безопасно ли и что делать\n\n` +
+    `Можно также просто вставить адрес прямо в чат — без нажатия кнопки.\n\n` +
     `<b>Советы:</b>\n` +
-    `• Проверяй ссылки из незнакомых сообщений\n` +
-    `• Особенно осторожно с сокращёнными ссылками (bit.ly и т.п.)\n` +
+    `• Проверяй ссылки из незнакомых сообщений и SMS\n` +
+    `• Особенно осторожно с сокращёнными ссылками (bit.ly, tinyurl и т.п.)\n` +
     `• Подписывайся на канал — там разборы реальных схем мошенников\n\n` +
     `📢 <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a> — канал о цифровой безопасности`;
 
@@ -439,17 +430,11 @@ export async function setupBot(webhookUrl: string): Promise<void> {
     });
     logger.info("Bot commands set");
 
-    // Устанавливаем кнопку меню (Menu Button) — открывает мини-апп
-    if (MINIAPP_URL) {
-      await tgCall("setChatMenuButton", {
-        menu_button: {
-          type: "web_app",
-          text: "Проверить ссылку",
-          web_app: { url: MINIAPP_URL },
-        },
-      });
-      logger.info({ MINIAPP_URL }, "Bot menu button set to mini app");
-    }
+    // Сбрасываем кнопку меню на стандартную (без мини-аппа)
+    await tgCall("setChatMenuButton", {
+      menu_button: { type: "default" },
+    });
+    logger.info("Bot menu button set to default");
   } catch (err) {
     logger.error({ err }, "Bot setup error");
   }
