@@ -259,9 +259,61 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (!BOT_TOKEN) return;
 
   if (update.message) {
-    const { chat, from, text } = update.message;
+    const { chat, from, text, caption, forward_date, forward_from, forward_from_chat, forward_sender_name } = update.message;
     const chatId = chat.id;
     const firstName = from?.first_name ?? "";
+    const isForwarded = !!forward_date;
+
+    // ── Пересланное сообщение ────────────────────────────────────────────────
+    if (isForwarded) {
+      const content = text || caption || "";
+      const url = extractUrl(content);
+
+      if (!url) {
+        await sendMessage(
+          chatId,
+          `📨 Вижу пересланное сообщение, но не нашёл в нём ссылки.\n\nЕсли хочешь проверить адрес — вставь его вручную.`,
+          { reply_markup: MAIN_KEYBOARD }
+        );
+        return;
+      }
+
+      // Откуда переслано
+      let sourceLabel = "";
+      if (forward_from_chat?.username) {
+        sourceLabel = ` из канала @${forward_from_chat.username}`;
+      } else if (forward_from_chat?.title) {
+        sourceLabel = ` из «${forward_from_chat.title}»`;
+      } else if (forward_from?.username) {
+        sourceLabel = ` от @${forward_from.username}`;
+      } else if (forward_sender_name) {
+        sourceLabel = ` от ${forward_sender_name}`;
+      }
+
+      await sendMessage(
+        chatId,
+        `📨 Нашёл ссылку в пересланном сообщении${sourceLabel}:\n<code>${url}</code>\n\nПроверяю...`
+      );
+
+      const userId = from?.id ?? chatId;
+      const rate = checkRateLimit(userId);
+
+      if (!rate.allowed) {
+        await sendMessage(
+          chatId,
+          `⏳ <b>Лимит на сегодня исчерпан</b>\n\nСчётчик обнулится <b>${timeUntilResetText()}</b>.`,
+          { reply_markup: { inline_keyboard: [[{ text: "📢 Канал @bezstrahavseti", url: "https://t.me/bezstrahavseti" }]] } }
+        );
+        return;
+      }
+
+      const footerHint = rate.remaining <= 5
+        ? `\n\n💡 Осталось проверок на сегодня: <b>${rate.remaining}</b>`
+        : "";
+
+      await handleLinkCheck(chatId, url, footerHint);
+      return;
+    }
 
     if (!text) return;
 
@@ -449,6 +501,12 @@ export interface TelegramUpdate {
     from?: { id: number; first_name: string; username?: string };
     chat: { id: number; type: string };
     text?: string;
+    caption?: string;
+    // Поля пересланных сообщений
+    forward_date?: number;
+    forward_from?: { id: number; first_name: string; username?: string };
+    forward_from_chat?: { id: number; title?: string; username?: string; type: string };
+    forward_sender_name?: string; // когда отправитель скрыл профиль
   };
   callback_query?: {
     id: string;
