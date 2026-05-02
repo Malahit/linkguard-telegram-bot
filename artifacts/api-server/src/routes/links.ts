@@ -12,6 +12,7 @@ import {
   ReportToParentResponse,
 } from "@workspace/api-zod";
 import { checkUrl } from "../lib/risk-engine";
+import { checkAndAlertDangerousUrl } from "../lib/scheduler";
 
 const router: IRouter = Router();
 
@@ -46,6 +47,15 @@ router.post("/links/check", async (req, res): Promise<void> => {
       isTrustedDomain: trustedDomains.some((td) => result.normalizedUrl.includes(td)),
     })
     .returning();
+
+  // Fire-and-forget: alert channel if this danger URL hits threshold
+  if (saved.verdict === "danger") {
+    void checkAndAlertDangerousUrl(
+      saved.normalizedUrl,
+      saved.threatTypes,
+      saved.explanation
+    );
+  }
 
   res.json(
     CheckLinkResponse.parse({
