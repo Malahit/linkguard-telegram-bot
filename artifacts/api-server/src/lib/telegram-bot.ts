@@ -2,6 +2,10 @@ import { logger } from "./logger";
 import { checkUrl } from "./risk-engine";
 import { generateAiRecommendation } from "./ai-recommendation";
 import { checkRateLimit, peekRateLimit, timeUntilResetText } from "./rate-limiter";
+import { saveReport, getPendingCount } from "./report-store";
+
+// Пользователи в режиме ожидания ссылки для репорта
+const pendingReport = new Set<number>();
 
 const BOT_TOKEN = process.env["TELEGRAM_BOT_TOKEN"];
 const CHANNEL_ID = process.env["OPENCLAW_CHANNEL_ID"];
@@ -174,6 +178,54 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
   }
 }
 
+// ─── Обработка репорта опасной ссылки ────────────────────────────────────────
+
+async function handleReport(
+  chatId: number,
+  userId: number,
+  username: string | undefined,
+  url: string
+): Promise<void> {
+  await sendTyping(chatId);
+
+  const id = await saveReport({ telegramId: userId, username, url });
+
+  if (id === null) {
+    await sendMessage(chatId, "❌ Не удалось сохранить жалобу. Попробуй позже.", {
+      reply_markup: MAIN_KEYBOARD,
+    });
+    return;
+  }
+
+  // Уведомляем администратора — шлём в ADMIN_CHAT_ID если задан, иначе пропускаем
+  const adminChatId = process.env["ADMIN_CHAT_ID"];
+  if (adminChatId) {
+    const pendingTotal = await getPendingCount();
+    const userTag = username ? `@${username}` : `id:${userId}`;
+    await tgCall("sendMessage", {
+      chat_id: Number(adminChatId),
+      text:
+        `🚩 <b>Новый репорт #${id}</b>\n\n` +
+        `Ссылка: <code>${url}</code>\n` +
+        `От: ${userTag}\n\n` +
+        `📋 Всего на рассмотрении: <b>${pendingTotal}</b>`,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    });
+  }
+
+  await sendMessage(
+    chatId,
+    `✅ <b>Спасибо! Жалоба #${id} принята.</b>\n\n` +
+    `Ссылка <code>${url}</code> отправлена на ручную проверку.\n\n` +
+    `Если она окажется опасной — обновим базу и защитим других пользователей. ` +
+    `Именно такие репорты делают OpenClaw лучше 💪`,
+    { reply_markup: MAIN_KEYBOARD }
+  );
+
+  logger.info({ reportId: id, url, userId }, "URL report submitted by user");
+}
+
 // ─── Детектор URL в тексте ───────────────────────────────────────────────────
 
 function extractUrl(text: string): string | null {
@@ -247,6 +299,24 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
+    if (text === "/report" || text.startsWith("/report ")) {
+      const inlineUrl = text.startsWith("/report ") ? text.slice(8).trim() : null;
+
+      if (inlineUrl) {
+        await handleReport(chatId, from?.id ?? chatId, from?.username, inlineUrl);
+      } else {
+        pendingReport.add(from?.id ?? chatId);
+        await sendMessage(
+          chatId,
+          `🚩 <b>Сообщить об опасной ссылке</b>\n\n` +
+          `Отправь мне ссылку, которую бот пропустил или неверно оценил — я передам её на проверку.\n\n` +
+          `Просто вставь адрес и отправь:`,
+          { reply_markup: { force_reply: true, selective: true } }
+        );
+      }
+      return;
+    }
+
     if (text === "/channel") {
       await sendMessage(
         chatId,
@@ -276,6 +346,14 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     const url = extractUrl(text);
     if (url) {
       const userId = from?.id ?? chatId;
+
+      // Пользователь в режиме репорта — сохраняем как жалобу
+      if (pendingReport.has(userId)) {
+        pendingReport.delete(userId);
+        await handleReport(chatId, userId, from?.username, url);
+        return;
+      }
+
       const rate = checkRateLimit(userId);
 
       if (!rate.allowed) {
@@ -351,6 +429,7 @@ export async function setupBot(webhookUrl: string): Promise<void> {
         { command: "start", description: "Запустить бота" },
         { command: "help", description: "Как пользоваться" },
         { command: "status", description: "Сколько проверок осталось сегодня" },
+        { command: "report", description: "Сообщить об опасной ссылке" },
         { command: "channel", description: "Канал @bezstrahavseti" },
       ],
     });
