@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { logger } from "./logger";
 import { sendToChannel } from "./telegram-bot";
 import { getPostForDate, formatPost, formatDangerAlert, getRubricForDate } from "./posts-pool";
+import { generateDailyNews } from "./ai-daily-news";
 import { db, linkChecksTable } from "@workspace/db";
 import { eq, sql, and, gt } from "drizzle-orm";
 
@@ -23,7 +24,9 @@ export function startScheduler(): void {
       const now = new Date();
       const rubric = getRubricForDate(now);
       const post = getPostForDate(now);
-      const text = formatPost(post);
+      const mainText = formatPost(post);
+      const news = await generateDailyNews();
+      const text = news ? `${mainText}\n\n${news}` : mainText;
 
       logger.info({ rubric, title: post.title }, `Scheduler: sending daily post [${RUBRIC_LABEL[rubric]}]`);
 
