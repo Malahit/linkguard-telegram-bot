@@ -1,7 +1,7 @@
 import { logger } from "./logger";
 import { checkUrl } from "./risk-engine";
 import { generateAiRecommendation } from "./ai-recommendation";
-import { checkRateLimit, timeUntilResetText } from "./rate-limiter";
+import { checkRateLimit, peekRateLimit, timeUntilResetText } from "./rate-limiter";
 
 const BOT_TOKEN = process.env["TELEGRAM_BOT_TOKEN"];
 const CHANNEL_ID = process.env["OPENCLAW_CHANNEL_ID"];
@@ -228,6 +228,25 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
+    if (text === "/status") {
+      const userId = from?.id ?? chatId;
+      const rate = peekRateLimit(userId);
+      const barFilled = Math.round((rate.used / rate.limit) * 10);
+      const bar = "🟩".repeat(barFilled) + "⬜".repeat(10 - barFilled);
+      await sendMessage(
+        chatId,
+        `📊 <b>Твой лимит проверок</b>\n\n` +
+        `${bar}\n` +
+        `Использовано: <b>${rate.used} из ${rate.limit}</b>\n` +
+        `Осталось: <b>${rate.remaining}</b>\n\n` +
+        (rate.remaining === 0
+          ? `⏳ Лимит исчерпан. Сбросится <b>${timeUntilResetText()}</b>.`
+          : `✅ Можешь проверить ещё ${rate.remaining} ${rate.remaining === 1 ? "ссылку" : rate.remaining < 5 ? "ссылки" : "ссылок"} сегодня.`),
+        { reply_markup: MAIN_KEYBOARD }
+      );
+      return;
+    }
+
     if (text === "/channel") {
       await sendMessage(
         chatId,
@@ -331,6 +350,7 @@ export async function setupBot(webhookUrl: string): Promise<void> {
       commands: [
         { command: "start", description: "Запустить бота" },
         { command: "help", description: "Как пользоваться" },
+        { command: "status", description: "Сколько проверок осталось сегодня" },
         { command: "channel", description: "Канал @bezstrahavseti" },
       ],
     });

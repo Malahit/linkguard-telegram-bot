@@ -4,7 +4,7 @@
  * No external dependencies needed.
  */
 
-const DAILY_LIMIT = 20;
+const DAILY_LIMIT = 10;
 
 interface UserCounter {
   count: number;
@@ -22,6 +22,19 @@ export interface RateLimitResult {
   used: number;
   limit: number;
   remaining: number;
+}
+
+/** Посмотреть текущий счётчик без увеличения */
+export function peekRateLimit(userId: number): RateLimitResult {
+  const key = todayKey();
+  const entry = counters.get(userId);
+  const used = (!entry || entry.dateKey !== key) ? 0 : entry.count;
+  return {
+    allowed: used < DAILY_LIMIT,
+    used,
+    limit: DAILY_LIMIT,
+    remaining: Math.max(0, DAILY_LIMIT - used),
+  };
 }
 
 export function checkRateLimit(userId: number): RateLimitResult {
