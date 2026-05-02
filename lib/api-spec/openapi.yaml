@@ -1,0 +1,383 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: LinkGuard — Telegram Mini App for link safety checking
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: links
+    description: Link checking operations
+  - name: users
+    description: User settings and profile
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /links/check:
+    post:
+      operationId: checkLink
+      tags: [links]
+      summary: Check a URL for safety
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckLinkBody"
+      responses:
+        "200":
+          description: Check result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkCheckResult"
+
+  /links/history:
+    get:
+      operationId: getLinkHistory
+      tags: [links]
+      summary: Get link check history for current user
+      parameters:
+        - name: telegramUserId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List of past checks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkHistoryResponse"
+
+  /links/stats:
+    get:
+      operationId: getLinkStats
+      tags: [links]
+      summary: Get aggregated stats for a user
+      parameters:
+        - name: telegramUserId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkStatsResponse"
+
+  /links/report-to-parent:
+    post:
+      operationId: reportToParent
+      tags: [links]
+      summary: Send a link check result to the parent contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportToParentBody"
+      responses:
+        "200":
+          description: Report sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportToParentResponse"
+
+  /users/settings:
+    get:
+      operationId: getUserSettings
+      tags: [users]
+      summary: Get user settings
+      parameters:
+        - name: telegramUserId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettings"
+    put:
+      operationId: updateUserSettings
+      tags: [users]
+      summary: Update user settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserSettingsBody"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettings"
+
+  /users/register:
+    post:
+      operationId: registerUser
+      tags: [users]
+      summary: Register or update a Telegram user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterUserBody"
+      responses:
+        "200":
+          description: User registered or updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    Verdict:
+      type: string
+      enum: [safe, caution, danger, unknown]
+
+    CheckLinkBody:
+      type: object
+      properties:
+        url:
+          type: string
+        telegramUserId:
+          type: string
+      required:
+        - url
+        - telegramUserId
+
+    LinkCheckResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+        normalizedUrl:
+          type: string
+        verdict:
+          $ref: "#/components/schemas/Verdict"
+        threatTypes:
+          type: array
+          items:
+            type: string
+        explanation:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+        isTrustedDomain:
+          type: boolean
+      required:
+        - id
+        - url
+        - normalizedUrl
+        - verdict
+        - threatTypes
+        - explanation
+        - checkedAt
+        - isTrustedDomain
+
+    LinkHistoryItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+        verdict:
+          $ref: "#/components/schemas/Verdict"
+        explanation:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+        reportedToParent:
+          type: boolean
+      required:
+        - id
+        - url
+        - verdict
+        - explanation
+        - checkedAt
+        - reportedToParent
+
+    LinkHistoryResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkHistoryItem"
+        total:
+          type: integer
+      required:
+        - items
+        - total
+
+    LinkStatsResponse:
+      type: object
+      properties:
+        totalChecked:
+          type: integer
+        safeCount:
+          type: integer
+        cautionCount:
+          type: integer
+        dangerCount:
+          type: integer
+        unknownCount:
+          type: integer
+        reportsToParent:
+          type: integer
+      required:
+        - totalChecked
+        - safeCount
+        - cautionCount
+        - dangerCount
+        - unknownCount
+        - reportsToParent
+
+    ReportToParentBody:
+      type: object
+      properties:
+        linkCheckId:
+          type: integer
+        telegramUserId:
+          type: string
+      required:
+        - linkCheckId
+        - telegramUserId
+
+    ReportToParentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+        - message
+
+    UserSettings:
+      type: object
+      properties:
+        telegramUserId:
+          type: string
+        parentContact:
+          type: string
+          nullable: true
+        trustedDomains:
+          type: array
+          items:
+            type: string
+        notifyParentOnDanger:
+          type: boolean
+        language:
+          type: string
+          default: ru
+      required:
+        - telegramUserId
+        - trustedDomains
+        - notifyParentOnDanger
+        - language
+
+    UpdateUserSettingsBody:
+      type: object
+      properties:
+        telegramUserId:
+          type: string
+        parentContact:
+          type: string
+          nullable: true
+        trustedDomains:
+          type: array
+          items:
+            type: string
+        notifyParentOnDanger:
+          type: boolean
+      required:
+        - telegramUserId
+
+    RegisterUserBody:
+      type: object
+      properties:
+        telegramUserId:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+          nullable: true
+        username:
+          type: string
+          nullable: true
+      required:
+        - telegramUserId
+        - firstName
+
+    UserProfile:
+      type: object
+      properties:
+        telegramUserId:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+          nullable: true
+        username:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - telegramUserId
+        - firstName
+        - createdAt
