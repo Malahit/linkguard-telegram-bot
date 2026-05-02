@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { startScheduler } from "./lib/scheduler";
+import { setupBot } from "./lib/telegram-bot";
 
 const rawPort = process.env["PORT"];
 
@@ -24,4 +25,14 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
   startScheduler();
+
+  // Настраиваем Telegram webhook + команды + кнопку меню
+  const domains = process.env["REPLIT_DOMAINS"];
+  if (domains) {
+    const domain = domains.split(",")[0];
+    const webhookUrl = `https://${domain}/api/webhook/telegram`;
+    void setupBot(webhookUrl);
+  } else {
+    logger.warn("REPLIT_DOMAINS not set — Telegram webhook not configured");
+  }
 });
