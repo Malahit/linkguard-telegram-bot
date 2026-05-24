@@ -2,7 +2,12 @@ import OpenAI from "openai";
 import { logger } from "./logger";
 import type { RiskResult } from "./risk-engine";
 
-const openai = new OpenAI({ apiKey: process.env["OPENAI_API_KEY"] });
+const openai = new OpenAI({
+  apiKey: process.env["OPENAI_API_KEY"],
+  baseURL: process.env["OPENAI_BASE_URL"],
+});
+
+const AI_MODEL = process.env["OPENAI_MODEL"] ?? "sonar";
 
 const VERDICT_CONTEXT: Record<string, string> = {
   safe: "безопасной",
@@ -36,7 +41,7 @@ ${threatInfo}
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: AI_MODEL,
       max_tokens: 512,
       messages: [
         { role: "system", content: systemPrompt },

@@ -1,7 +1,12 @@
 import OpenAI from "openai";
 import { logger } from "./logger";
 
-const openai = new OpenAI({ apiKey: process.env["OPENAI_API_KEY"] });
+const openai = new OpenAI({
+  apiKey: process.env["OPENAI_API_KEY"],
+  baseURL: process.env["OPENAI_BASE_URL"],
+});
+
+const AI_MODEL = process.env["OPENAI_MODEL"] ?? "sonar";
 
 export async function generateDailyNews(): Promise<string> {
   const today = new Date().toLocaleDateString("ru-RU", {
@@ -20,7 +25,7 @@ export async function generateDailyNews(): Promise<string> {
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: AI_MODEL,
       max_tokens: 800,
       messages: [
         { role: "system", content: systemPrompt },
