@@ -1,6 +1,8 @@
-import { openai } from "@workspace/integrations-openai-ai-server";
+import OpenAI from "openai";
 import { logger } from "./logger";
 import type { RiskResult } from "./risk-engine";
+
+const openai = new OpenAI({ apiKey: process.env["OPENAI_API_KEY"] });
 
 const VERDICT_CONTEXT: Record<string, string> = {
   safe: "безопасной",
@@ -34,8 +36,8 @@ ${threatInfo}
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-5-mini",
-      max_completion_tokens: 512,
+      model: "gpt-4o-mini",
+      max_tokens: 512,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
