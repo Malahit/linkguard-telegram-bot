@@ -12,7 +12,7 @@ COPY scripts/package.json ./scripts/
 # Dummy packages so pnpm workspace resolves correctly
 COPY lib/api-client-react/package.json ./lib/api-client-react/
 COPY lib/api-spec/package.json ./lib/api-spec/
-RUN pnpm install --frozen-lockfile --filter @workspace/api-server... 2>/dev/null || pnpm install --filter @workspace/api-server...
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @workspace/api-server... 2>/dev/null || pnpm install --ignore-scripts --filter @workspace/api-server...
 
 # Build libs
 FROM deps AS builder
@@ -34,7 +34,7 @@ COPY scripts/package.json ./scripts/
 COPY lib/api-client-react/package.json ./lib/api-client-react/
 COPY lib/api-spec/package.json ./lib/api-spec/
 
-RUN pnpm install --frozen-lockfile --prod --filter @workspace/api-server... 2>/dev/null || pnpm install --prod --filter @workspace/api-server...
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @workspace/api-server... 2>/dev/null || pnpm install --ignore-scripts --prod --filter @workspace/api-server...
 
 COPY --from=builder /app/artifacts/api-server/dist ./artifacts/api-server/dist
 COPY lib/db/drizzle.config.ts ./lib/db/
