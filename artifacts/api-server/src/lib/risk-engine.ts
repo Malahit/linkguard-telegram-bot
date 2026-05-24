@@ -1,4 +1,5 @@
 import { logger } from "./logger";
+import { checkVirusTotal } from "./virustotal";
 
 export type Verdict = "safe" | "caution" | "danger" | "unknown";
 
@@ -7,6 +8,7 @@ export interface RiskResult {
   threatTypes: string[];
   explanation: string;
   normalizedUrl: string;
+  vtPermalink?: string;
 }
 
 const THREAT_TYPE_LABELS: Record<string, string> = {
@@ -54,8 +56,7 @@ function heuristicAnalysis(normalizedUrl: string): { suspicious: boolean; reason
     }
   }
 
-  const suspiciousSubdomainDepth = domain.split(".").length > 4;
-  if (suspiciousSubdomainDepth) {
+  if (domain.split(".").length > 4) {
     reasons.push("слишком много уровней домена");
   }
 
@@ -105,6 +106,7 @@ export async function checkUrl(
   const normalizedUrl = normalizeUrl(rawUrl);
   const domain = extractDomain(normalizedUrl);
 
+  // Layer 0: trusted domains whitelist
   if (trustedDomains.some((td) => domain === td || domain.endsWith(`.${td}`))) {
     return {
       verdict: "safe",
@@ -114,23 +116,58 @@ export async function checkUrl(
     };
   }
 
-  const [webRiskResult, heuristics] = await Promise.all([
+  // Layer 1 + 2: Google Web Risk & VirusTotal — run in parallel
+  const [webRiskResult, vtResult] = await Promise.all([
     checkGoogleWebRisk(normalizedUrl),
-    Promise.resolve(heuristicAnalysis(normalizedUrl)),
+    checkVirusTotal(normalizedUrl),
   ]);
 
+  // Layer 1: Google verdict
   const threatTypes = webRiskResult.threatTypes;
-
   if (threatTypes.length > 0) {
     const labels = threatTypes.map((t) => THREAT_TYPE_LABELS[t] ?? t).join(", ");
     return {
       verdict: "danger",
       threatTypes,
-      explanation: `Лучше не открывай — этот сайт помечен как опасный (${labels}).`,
+      explanation: `Лучше не открывай — Google пометил этот сайт как опасный (${labels}).`,
       normalizedUrl,
+      vtPermalink: vtResult?.permalink,
     };
   }
 
+  // Layer 2: VirusTotal verdict
+  if (vtResult) {
+    const { malicious, suspicious } = vtResult.stats;
+    const vtLink = vtResult.permalink;
+
+    if (malicious >= 3) {
+      return {
+        verdict: "danger",
+        threatTypes: ["VT_MALICIOUS"],
+        explanation: `Опасно! ${malicious} антивирусных движков на VirusTotal считают этот сайт вредоносным. Не открывай.`,
+        normalizedUrl,
+        vtPermalink: vtLink,
+      };
+    }
+
+    if (malicious >= 1 || suspicious >= 5) {
+      const detail = malicious >= 1
+        ? `${malicious} движков: вредоносный`
+        : `${suspicious} движков: подозрительный`;
+      return {
+        verdict: "caution",
+        threatTypes: ["VT_SUSPICIOUS"],
+        explanation: `Будь осторожен — VirusTotal сигнализирует (${detail}). Лучше проверь сам.`,
+        normalizedUrl,
+        vtPermalink: vtLink,
+      };
+    }
+
+    // VT says clean — still run heuristics as last sanity check
+  }
+
+  // Layer 3: heuristics
+  const heuristics = heuristicAnalysis(normalizedUrl);
   if (heuristics.suspicious) {
     const reasons = heuristics.reasons.join(", ");
     return {
@@ -138,6 +175,7 @@ export async function checkUrl(
       threatTypes: [],
       explanation: `Будь осторожен — сайт кажется подозрительным (${reasons}).`,
       normalizedUrl,
+      vtPermalink: vtResult?.permalink,
     };
   }
 
@@ -147,6 +185,7 @@ export async function checkUrl(
       threatTypes: [],
       explanation: "Этот сайт выглядит безопасным.",
       normalizedUrl,
+      vtPermalink: vtResult?.permalink,
     };
   }
 
@@ -155,5 +194,6 @@ export async function checkUrl(
     threatTypes: [],
     explanation: "Мы не знаем этот сайт. Открывай только если доверяешь отправителю.",
     normalizedUrl,
+    vtPermalink: vtResult?.permalink,
   };
 }
