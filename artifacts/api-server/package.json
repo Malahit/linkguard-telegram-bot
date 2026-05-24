@@ -17,6 +17,7 @@
     "drizzle-orm": "catalog:",
     "express": "^5",
     "node-cron": "^4.2.1",
+    "openai": "^4",
     "pino": "^9",
     "pino-http": "^10"
   },
