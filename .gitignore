@@ -47,3 +47,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# env files
+.env
+.env.*
+
+# pnpm
+.pnpm-store/
+node_modules/
