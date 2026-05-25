@@ -26,13 +26,21 @@ app.listen(port, (err) => {
   logger.info({ port }, "Server listening");
   startScheduler();
 
-  // Настраиваем Telegram webhook + команды + кнопку меню
-  const domains = process.env["REPLIT_DOMAINS"];
-  if (domains) {
-    const domain = domains.split(",")[0];
-    const webhookUrl = `https://${domain}/api/webhook/telegram`;
+  // Register Telegram webhook from env (works on VPS and any hosting)
+  const webhookUrl = process.env["TELEGRAM_WEBHOOK_URL"];
+  if (webhookUrl) {
     void setupBot(webhookUrl);
   } else {
-    logger.warn("REPLIT_DOMAINS not set — Telegram webhook not configured");
+    // Fallback: try Replit-style domain discovery
+    const domains = process.env["REPLIT_DOMAINS"];
+    if (domains) {
+      const domain = domains.split(",")[0];
+      const replitWebhookUrl = `https://${domain}/api/webhook/telegram`;
+      void setupBot(replitWebhookUrl);
+    } else {
+      logger.warn(
+        "TELEGRAM_WEBHOOK_URL not set and REPLIT_DOMAINS not set — Telegram webhook not configured"
+      );
+    }
   }
 });
