@@ -29,6 +29,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Health check endpoint — used by Docker healthcheck and monitor container
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", ts: new Date().toISOString() });
+});
+
 app.use("/api", router);
 
 export default app;
