@@ -43,9 +43,53 @@ services:
       retries: 3
       start_period: 20s
 
+  monitor:
+    image: alpine:3.19
+    restart: unless-stopped
+    depends_on:
+      - api
+    env_file:
+      - .env.production
+    environment:
+      API_URL: http://api:8081/health
+      CHECK_INTERVAL: "60"   # seconds between checks
+      FAIL_THRESHOLD: "3"    # consecutive failures before alert
+    command: >
+      sh -c '
+        apk add --no-cache curl > /dev/null 2>&1;
+        FAILS=0;
+        ALERTED=0;
+        echo "[monitor] started, checking $$API_URL every $${CHECK_INTERVAL}s";
+        while true; do
+          sleep "$$CHECK_INTERVAL";
+          if curl -sf --max-time 5 "$$API_URL" > /dev/null 2>&1; then
+            if [ "$$ALERTED" = "1" ]; then
+              MSG="✅ LinkGuard bot is back online";
+              curl -s -X POST "https://api.telegram.org/bot$${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="$$ADMIN_CHAT_ID" \
+                -d text="$$MSG" > /dev/null;
+              echo "[monitor] recovery alert sent";
+            fi;
+            FAILS=0;
+            ALERTED=0;
+          else
+            FAILS=$$((FAILS+1));
+            echo "[monitor] check failed ($$FAILS/$$FAIL_THRESHOLD)";
+            if [ "$$FAILS" -ge "$$FAIL_THRESHOLD" ] && [ "$$ALERTED" = "0" ]; then
+              MSG="🚨 LinkGuard bot is DOWN! $$FAILS consecutive failures. Check VPS immediately.";
+              curl -s -X POST "https://api.telegram.org/bot$${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="$$ADMIN_CHAT_ID" \
+                -d text="$$MSG" > /dev/null;
+              echo "[monitor] alert sent to Telegram";
+              ALERTED=1;
+            fi;
+          fi;
+        done
+      '
+
 volumes:
   postgres_data:
 
 # NOTE: No frontend service here.
 # The system nginx on this VPS handles :80/:443 and proxies to localhost:8081.
-# See step 2/4 (infra/nginx-ssl) for the nginx vhost config.
+# See DEPLOY.md for the nginx vhost config.
