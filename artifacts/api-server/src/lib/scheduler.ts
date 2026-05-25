@@ -16,6 +16,15 @@ const RUBRIC_LABEL: Record<string, string> = {
   story:     "📖 История",
 };
 
+function getBotUrl(): string {
+  const username = process.env["BOT_USERNAME"];
+  if (username) {
+    const clean = username.startsWith("@") ? username.slice(1) : username;
+    return `https://t.me/${clean}`;
+  }
+  return "https://t.me/openclaw";
+}
+
 export function startScheduler(): void {
   // Daily post at 10:00 Moscow time (UTC+3 → 07:00 UTC)
   cron.schedule(
@@ -31,7 +40,7 @@ export function startScheduler(): void {
       logger.info({ rubric, title: post.title }, `Scheduler: sending daily post [${RUBRIC_LABEL[rubric]}]`);
 
       const ok = await sendToChannel(text, [
-        [{ text: "🔗 Проверить ссылку", url: "https://t.me/chistyi_signal_bot" }],
+        [{ text: "🔗 Проверить ссылку", url: getBotUrl() }],
       ]);
       if (ok) {
         logger.info({ rubric, title: post.title }, "Daily post sent to channel");
