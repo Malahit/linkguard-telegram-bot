@@ -322,7 +322,7 @@ export function formatPost(post: Post): string {
     `<b>${post.title}</b>\n\n` +
     `${post.body}\n\n` +
     `${mainTag} ${extraTags}\n\n` +
-    `🔗 <a href="https://t.me/bezstrahavseti">OpenClaw</a> — цифровая безопасность`
+    `🔗 <a href="https://t.me/bezstrahavseti">Без страха в сети</a>`
   );
 }
 
@@ -344,7 +344,7 @@ export function formatDangerAlert(
     `<b>Что это значит:</b>\n${explanation}\n\n` +
     `❌ Не переходи по этой ссылке. Если получил её от знакомого — скажи ему об этом.\n\n` +
     `#опасно #фишинг #предупреждение\n\n` +
-    `🔗 <a href="https://t.me/bezstrahavseti">OpenClaw</a> — проверяй ссылки перед открытием`
+    `🔗 <a href="https://t.me/bezstrahavseti">Без страха в сети</a> — проверяй ссылки перед открытием`
   );
 }
 
