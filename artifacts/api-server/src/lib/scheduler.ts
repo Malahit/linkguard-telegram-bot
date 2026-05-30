@@ -16,6 +16,8 @@ const RUBRIC_LABEL: Record<string, string> = {
   story:     "📖 История",
 };
 
+const BOT_URL = "https://t.me/chistyi_signal_bot";
+
 export function startScheduler(): void {
   // Daily post at 10:00 Moscow time (UTC+3 → 07:00 UTC)
   cron.schedule(
@@ -30,7 +32,9 @@ export function startScheduler(): void {
 
       logger.info({ rubric, title: post.title }, `Scheduler: sending daily post [${RUBRIC_LABEL[rubric]}]`);
 
-      const ok = await sendToChannel(text);
+      const ok = await sendToChannel(text, [
+        [{ text: "🔗 Проверить ссылку", url: BOT_URL }],
+      ]);
       if (ok) {
         logger.info({ rubric, title: post.title }, "Daily post sent to channel");
       }
