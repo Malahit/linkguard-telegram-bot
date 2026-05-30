@@ -21,7 +21,7 @@ COPY lib/ ./lib/
 COPY artifacts/api-server/ ./artifacts/api-server/
 RUN pnpm --filter @workspace/api-server run build
 
-# Test stage — re-install with native optional deps for musl/Alpine
+# Test stage
 FROM base AS tester
 COPY package.json pnpm-workspace.yaml ./
 COPY artifacts/api-server/package.json ./artifacts/api-server/
@@ -30,11 +30,15 @@ COPY lib/db/package.json ./lib/db/
 COPY scripts/package.json ./scripts/
 COPY lib/api-client-react/package.json ./lib/api-client-react/
 COPY lib/api-spec/package.json ./lib/api-spec/
-RUN pnpm install --ignore-scripts --filter @workspace/api-server...
+# Install all deps including devDependencies, allow scripts for native binaries
+RUN pnpm install --ignore-scripts --filter @workspace/api-server... \
+ && pnpm add -w --ignore-workspace-root-check @rollup/rollup-linux-x64-musl 2>/dev/null || true \
+ && node -e "require('/app/node_modules/.pnpm/rollup@4.60.4/node_modules/rollup/dist/native.js')" 2>/dev/null || \
+    pnpm --filter @workspace/api-server add -D @rollup/rollup-linux-x64-musl 2>/dev/null || true
 COPY tsconfig.base.json tsconfig.json ./
 COPY lib/ ./lib/
 COPY artifacts/api-server/ ./artifacts/api-server/
-CMD ["pnpm", "--filter", "@workspace/api-server", "run", "test"]
+CMD ["sh", "-c", "cd /app && pnpm add -D @rollup/rollup-linux-x64-musl --filter @workspace/api-server 2>/dev/null; pnpm --filter @workspace/api-server run test"]
 
 # Run migrations and start
 FROM node:24-alpine AS runner
