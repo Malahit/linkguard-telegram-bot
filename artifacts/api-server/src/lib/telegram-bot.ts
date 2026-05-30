@@ -179,7 +179,6 @@ export async function handleStart(chatId: number, firstName: string, userId: num
     },
   });
 
-  // Алерт админу — не блокируем ответ пользователю
   notifyAdminNewUser(userId, firstName, username).catch(() => {});
 }
 
@@ -187,9 +186,7 @@ export async function handleStart(chatId: number, firstName: string, userId: num
 
 async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""): Promise<void> {
   await sendTyping(chatId);
-
   await sendMessage(chatId, `🔍 Проверяю ссылку...\n<code>${rawUrl}</code>`);
-
   await sendTyping(chatId);
 
   try {
@@ -214,8 +211,15 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
       `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>` +
       footerHint;
 
+    // Инлайн-кнопка «Отчёт VirusTotal» если есть пермалинк
+    const inlineKeyboard = risk.vtPermalink
+      ? [[{ text: "🔎 Отчёт VirusTotal", url: risk.vtPermalink }]]
+      : undefined;
+
     await sendMessage(chatId, responseText, {
-      reply_markup: MAIN_KEYBOARD,
+      reply_markup: inlineKeyboard
+        ? { ...MAIN_KEYBOARD, inline_keyboard: inlineKeyboard }
+        : MAIN_KEYBOARD,
     });
   } catch (err) {
     logger.error({ err, rawUrl }, "Link check failed in bot");
