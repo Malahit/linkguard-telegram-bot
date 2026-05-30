@@ -3,12 +3,15 @@ import { checkUrl } from "./risk-engine";
 import { generateAiRecommendation } from "./ai-recommendation";
 import { checkRateLimit, peekRateLimit, timeUntilResetText } from "./rate-limiter";
 import { saveReport, getPendingCount } from "./report-store";
+import { db, linkChecksTable } from "@workspace/db";
+import { sql, and, gt } from "drizzle-orm";
 
 // Пользователи в режиме ожидания ссылки для репорта
 const pendingReport = new Set<number>();
 
 const BOT_TOKEN = process.env["TELEGRAM_BOT_TOKEN"];
 const CHANNEL_ID = process.env["OPENCLAW_CHANNEL_ID"];
+const ADMIN_CHAT_ID = process.env["ADMIN_CHAT_ID"];
 
 const MINIAPP_URL =
   process.env["MINIAPP_URL"] ||
@@ -20,7 +23,7 @@ export function isConfigured(): boolean {
   return !!(BOT_TOKEN && CHANNEL_ID);
 }
 
-// ─── Базовый вызов Telegram API ────────────────────────────────────────────────────
+// ─── Базовый вызов Telegram API ──────────────────────────────────────────────────
 
 async function tgCall(
   method: string,
@@ -104,9 +107,59 @@ export async function sendToChannel(
   }
 }
 
+// ─── Алерт админу о новом пользователе ──────────────────────────────────────────────────
+
+async function notifyAdminNewUser(
+  userId: number,
+  firstName: string,
+  username: string | undefined
+): Promise<void> {
+  if (!ADMIN_CHAT_ID) return;
+  const userTag = username ? `@${username}` : `id:${userId}`;
+  await tgCall("sendMessage", {
+    chat_id: Number(ADMIN_CHAT_ID),
+    text:
+      `👋 <b>Новый пользователь</b>\n\n` +
+      `Имя: ${firstName}\n` +
+      `Аккаунт: ${userTag}\n` +
+      `ID: <code>${userId}</code>`,
+    parse_mode: "HTML",
+  }).catch(() => {});
+}
+
+// ─── Статистика ──────────────────────────────────────────────────────────────────────────────
+
+async function getStats(): Promise<{ today: number; week: number; total: number }> {
+  const now = new Date();
+  const startOfDay = new Date(now);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const startOfWeek = new Date(now);
+  startOfWeek.setUTCDate(now.getUTCDate() - 7);
+
+  const [todayRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(linkChecksTable)
+    .where(gt(linkChecksTable.checkedAt, startOfDay));
+
+  const [weekRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(linkChecksTable)
+    .where(gt(linkChecksTable.checkedAt, startOfWeek));
+
+  const [totalRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(linkChecksTable);
+
+  return {
+    today: todayRow?.count ?? 0,
+    week: weekRow?.count ?? 0,
+    total: totalRow?.count ?? 0,
+  };
+}
+
 // ─── /start ───────────────────────────────────────────────────────────────────────────────
 
-export async function handleStart(chatId: number, firstName: string): Promise<void> {
+export async function handleStart(chatId: number, firstName: string, userId: number, username?: string): Promise<void> {
   const name = firstName ? ` ${firstName}` : "";
   const text =
     `👋 Привет${name}!\n\n` +
@@ -125,6 +178,9 @@ export async function handleStart(chatId: number, firstName: string): Promise<vo
       ],
     },
   });
+
+  // Алерт админу — не блокируем ответ пользователю
+  notifyAdminNewUser(userId, firstName, username).catch(() => {});
 }
 
 // ─── Проверка ссылки через AI ────────────────────────────────────────────────────────────────
@@ -190,12 +246,11 @@ async function handleReport(
     return;
   }
 
-  const adminChatId = process.env["ADMIN_CHAT_ID"];
-  if (adminChatId) {
+  if (ADMIN_CHAT_ID) {
     const pendingTotal = await getPendingCount();
     const userTag = username ? `@${username}` : `id:${userId}`;
     await tgCall("sendMessage", {
-      chat_id: Number(adminChatId),
+      chat_id: Number(ADMIN_CHAT_ID),
       text:
         `🚩 <b>Новый репорт #${id}</b>\n\n` +
         `Ссылка: <code>${url}</code>\n` +
@@ -246,6 +301,29 @@ export async function handleHelp(chatId: number): Promise<void> {
     `📢 <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a> — канал о цифровой безопасности`;
 
   await sendMessage(chatId, text, { reply_markup: MAIN_KEYBOARD });
+}
+
+// ─── /stats (только для админа) ─────────────────────────────────────────────────────────────
+
+async function handleStats(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+  try {
+    const stats = await getStats();
+    await sendMessage(
+      chatId,
+      `📊 <b>Статистика проверок</b>\n\n` +
+      `Сегодня: <b>${stats.today}</b>\n` +
+      `За 7 дней: <b>${stats.week}</b>\n` +
+      `Всего за всё время: <b>${stats.total}</b>`,
+      { reply_markup: MAIN_KEYBOARD }
+    );
+  } catch (err) {
+    logger.error({ err }, "Failed to get stats");
+    await sendMessage(chatId, "❌ Не удалось получить статистику.");
+  }
 }
 
 // ─── Главный обработчик update ──────────────────────────────────────────────────────────────────
@@ -311,12 +389,17 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     if (!text) return;
 
     if (text === "/start" || text.startsWith("/start ")) {
-      await handleStart(chatId, firstName);
+      await handleStart(chatId, firstName, from?.id ?? chatId, from?.username);
       return;
     }
 
     if (text === "/help") {
       await handleHelp(chatId);
+      return;
+    }
+
+    if (text === "/stats") {
+      await handleStats(chatId);
       return;
     }
 
