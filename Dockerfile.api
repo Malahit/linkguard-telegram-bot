@@ -21,8 +21,16 @@ COPY lib/ ./lib/
 COPY artifacts/api-server/ ./artifacts/api-server/
 RUN pnpm --filter @workspace/api-server run build
 
-# Test stage — devDeps already present from deps stage
-FROM deps AS tester
+# Test stage — re-install with native optional deps for musl/Alpine
+FROM base AS tester
+COPY package.json pnpm-workspace.yaml ./
+COPY artifacts/api-server/package.json ./artifacts/api-server/
+COPY lib/api-zod/package.json ./lib/api-zod/
+COPY lib/db/package.json ./lib/db/
+COPY scripts/package.json ./scripts/
+COPY lib/api-client-react/package.json ./lib/api-client-react/
+COPY lib/api-spec/package.json ./lib/api-spec/
+RUN pnpm install --ignore-scripts --filter @workspace/api-server...
 COPY tsconfig.base.json tsconfig.json ./
 COPY lib/ ./lib/
 COPY artifacts/api-server/ ./artifacts/api-server/
