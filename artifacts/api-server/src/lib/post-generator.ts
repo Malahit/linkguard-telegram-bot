@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { logger } from "./logger";
 import { getPostForDate, formatPost, getRubricForDate } from "./posts-pool";
+import { saveDraft, todayKey } from "./draft-store";
 import type { Rubric } from "./posts-pool";
 
 // ─── OpenAI client (shared pattern from ai-daily-news.ts) ────────────────────
@@ -40,7 +41,10 @@ const USER_PROMPTS: Record<string, (date: string) => string> = {
 - Используй эмодзи-маркеры (🔴 для опасного, ✅ для защиты)
 - Длина: 150–220 слов
 - Начни с заголовка вида: 🎣 Разбор: [название схемы]
-- В конце добавь: #разбор и 2–3 тематических хэштега`,
+- В конце добавь: #разбор и 2–3 тематических хэштега
+- Заголовок должен содержать поисковую фразу — то, что люди реально вводят в Google.
+  Пример: «Как распознать фишинг за 10 секунд», «Мошенники в Telegram: новая схема»
+- Одна строка — органичный призыв поделиться. Помести её последней строкой перед хэштегами.`,
 
   story: (date) =>
     `Напиши пост-историю от первого лица (или от лица персонажа) для канала @bezstrahavseti. Дата: ${date}.
@@ -52,7 +56,9 @@ const USER_PROMPTS: Record<string, (date: string) => string> = {
 - Без морализаторства — история сама говорит за себя
 - Длина: 150–220 слов
 - Начни с заголовка вида: 📖 История: «[короткая фраза от героя]»
-- В конце: #история и 2–3 тематических хэштега`,
+- В конце: #история и 2–3 тематических хэштега
+- Заголовок должен содержать поисковую фразу — то, что люди реально вводят в Google.
+- Одна строка — органичный призыв поделиться. Помести её последней строкой перед хэштегами.`,
 
   tool: (date) =>
     `Напиши пост-обзор конкретного инструмента для цифровой безопасности для канала @bezstrahavseti. Дата: ${date}.
@@ -64,7 +70,9 @@ const USER_PROMPTS: Record<string, (date: string) => string> = {
 - Используй ✅ для преимуществ
 - Длина: 150–220 слов
 - Начни с заголовка вида: 🛠 Инструмент: [название]
-- В конце: #инструмент и 2–3 тематических хэштега`,
+- В конце: #инструмент и 2–3 тематических хэштега
+- Заголовок должен содержать поисковую фразу — то, что люди реально вводят в Google.
+- Одна строка — органичный призыв поделиться. Помести её последней строкой перед хэштегами.`,
 };
 
 // ─── Footer appended to every AI-generated post ──────────────────────────────
@@ -73,7 +81,65 @@ function buildFooter(): string {
   return "\n\n🔗 <a href=\"https://t.me/bezstrahavseti\">Без страха в сети</a>";
 }
 
-// ─── Main export ─────────────────────────────────────────────────────────────
+// ─── Core text generation (shared) ───────────────────────────────────────────
+
+async function generateText(rubric: string, date: Date): Promise<string | null> {
+  const client = getClient();
+  if (!client) return null;
+
+  const userPromptFn = USER_PROMPTS[rubric];
+  if (!userPromptFn) return null;
+
+  const today = date.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  const response = await client.chat.completions.create({
+    model: AI_MODEL,
+    max_tokens: 700,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userPromptFn(today) },
+    ],
+  });
+
+  const text = response.choices[0]?.message?.content?.trim();
+  return text || null;
+}
+
+// ─── Generate a DRAFT (admin preview, not published yet) ─────────────────────
+
+/**
+ * Generates the post for today, saves it to draft-store, and returns
+ * the draft text. The admin can then /approve or /discard it.
+ */
+export async function generateDraftForDate(date: Date = new Date()): Promise<string> {
+  const rubric = getRubricForDate(date);
+  const staticPost = getPostForDate(date);
+  const dateKey = todayKey();
+
+  let text: string;
+
+  if (!DYNAMIC_RUBRICS.has(rubric)) {
+    text = formatPost(staticPost);
+  } else {
+    try {
+      const aiText = await generateText(rubric, date);
+      text = aiText ? aiText + buildFooter() : formatPost(staticPost);
+    } catch (err) {
+      logger.warn({ err, rubric }, "Draft generation: AI failed — using pool post");
+      text = formatPost(staticPost);
+    }
+  }
+
+  saveDraft(dateKey, text);
+  logger.info({ dateKey, rubric }, "Draft saved");
+  return text;
+}
+
+// ─── Main export (auto-publish path, unchanged behaviour) ─────────────────────
 
 /**
  * Returns a formatted post text for the given date.
@@ -97,33 +163,10 @@ export async function generatePostForDate(date: Date = new Date()): Promise<stri
     return formatPost(staticPost);
   }
 
-  const today = date.toLocaleDateString("ru-RU", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
-
-  const userPromptFn = USER_PROMPTS[rubric];
-  if (!userPromptFn) {
-    logger.warn({ rubric }, "Post generator: no prompt for rubric — falling back to pool post");
-    return formatPost(staticPost);
-  }
-
   try {
     logger.info({ rubric }, "Post generator: requesting AI-generated post");
-
-    const response = await client.chat.completions.create({
-      model: AI_MODEL,
-      max_tokens: 700,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPromptFn(today) },
-      ],
-    });
-
-    const text = response.choices[0]?.message?.content?.trim();
+    const text = await generateText(rubric, date);
     if (!text) throw new Error("Empty AI response");
-
     logger.info({ rubric }, "Post generator: AI post generated successfully");
     return text + buildFooter();
   } catch (err) {

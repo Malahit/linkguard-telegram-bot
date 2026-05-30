@@ -3,8 +3,11 @@ import { checkUrl } from "./risk-engine";
 import { generateAiRecommendation } from "./ai-recommendation";
 import { checkRateLimit, peekRateLimit, timeUntilResetText } from "./rate-limiter";
 import { saveReport, getPendingCount } from "./report-store";
+import { generateDraftForDate } from "./post-generator";
+import { getDraft, deleteDraft, listDrafts, todayKey } from "./draft-store";
+import { sendToChannel } from "./telegram-bot";
 import { db, linkChecksTable } from "@workspace/db";
-import { sql, and, gt } from "drizzle-orm";
+import { sql, gt } from "drizzle-orm";
 
 // Пользователи в режиме ожидания ссылки для репорта
 const pendingReport = new Set<number>();
@@ -211,7 +214,6 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
       `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>` +
       footerHint;
 
-    // Инлайн-кнопка «Отчёт VirusTotal» если есть пермалинк
     const inlineKeyboard = risk.vtPermalink
       ? [[{ text: "🔎 Отчёт VirusTotal", url: risk.vtPermalink }]]
       : undefined;
@@ -275,6 +277,129 @@ async function handleReport(
   );
 
   logger.info({ reportId: id, url, userId }, "URL report submitted by user");
+}
+
+// ─── /draft — сгенерировать черновик (только для админа) ─────────────────────
+
+async function handleDraft(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  await sendTyping(chatId);
+  await sendMessage(chatId, "⏳ Генерирую черновик поста...");
+
+  try {
+    const text = await generateDraftForDate(new Date());
+    const dateKey = todayKey();
+
+    await sendMessage(
+      chatId,
+      `📝 <b>Черновик на ${dateKey}</b>\n\n` +
+      `─────────────────────\n\n` +
+      text +
+      `\n\n─────────────────────\n\n` +
+      `✅ /approve — опубликовать\n` +
+      `🗑 /discard — удалить черновик`
+    );
+  } catch (err) {
+    logger.error({ err }, "Failed to generate draft");
+    await sendMessage(chatId, "❌ Не удалось сгенерировать черновик.");
+  }
+}
+
+// ─── /approve — опубликовать черновик (только для админа) ────────────────────
+
+async function handleApprove(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  const dateKey = todayKey();
+  const draft = getDraft(dateKey);
+
+  if (!draft) {
+    await sendMessage(
+      chatId,
+      `⚠️ Черновик на <b>${dateKey}</b> не найден.\n\nСначала сгенерируй его: /draft`
+    );
+    return;
+  }
+
+  await sendTyping(chatId);
+
+  const ok = await sendToChannel(draft.text);
+
+  if (ok) {
+    deleteDraft(dateKey);
+    await sendMessage(
+      chatId,
+      `✅ <b>Пост за ${dateKey} опубликован в канале!</b>\n\n` +
+      `Черновик удалён.`
+    );
+    logger.info({ dateKey }, "Draft approved and published");
+  } else {
+    await sendMessage(
+      chatId,
+      `❌ Не удалось отправить пост в канал.\nЧерновик сохранён — попробуй /approve снова.`
+    );
+  }
+}
+
+// ─── /discard — удалить черновик (только для админа) ─────────────────────────
+
+async function handleDiscard(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  const dateKey = todayKey();
+  const deleted = deleteDraft(dateKey);
+
+  if (deleted) {
+    await sendMessage(
+      chatId,
+      `🗑 Черновик на <b>${dateKey}</b> удалён.\n\nСоздать новый: /draft`
+    );
+    logger.info({ dateKey }, "Draft discarded");
+  } else {
+    await sendMessage(
+      chatId,
+      `⚠️ Черновик на <b>${dateKey}</b> не найден — возможно, уже удалён.`
+    );
+  }
+}
+
+// ─── /drafts — список всех черновиков (только для админа) ────────────────────
+
+async function handleDraftsList(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  const drafts = listDrafts();
+
+  if (drafts.length === 0) {
+    await sendMessage(chatId, `📭 Черновиков нет.\n\nСоздать на сегодня: /draft`);
+    return;
+  }
+
+  const lines = drafts.map((d) => {
+    const age = Math.round((Date.now() - d.createdAt) / 60_000);
+    const ageStr = age < 60 ? `${age} мин. назад` : `${Math.round(age / 60)} ч. назад`;
+    return `• <b>${d.date}</b> — создан ${ageStr}`;
+  });
+
+  await sendMessage(
+    chatId,
+    `📋 <b>Черновики (${drafts.length}):</b>\n\n` +
+    lines.join("\n") +
+    `\n\n/approve — опубликовать сегодняшний\n/discard — удалить сегодняшний`
+  );
 }
 
 // ─── Детектор URL в тексте ─────────────────────────────────────────────────────────────────────
@@ -458,6 +583,30 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       );
       return;
     }
+
+    // ─── Черновик-режим (только для админа) ──────────────────────────────────
+
+    if (text === "/draft") {
+      await handleDraft(chatId);
+      return;
+    }
+
+    if (text === "/approve") {
+      await handleApprove(chatId);
+      return;
+    }
+
+    if (text === "/discard") {
+      await handleDiscard(chatId);
+      return;
+    }
+
+    if (text === "/drafts") {
+      await handleDraftsList(chatId);
+      return;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     if (text === "🔗 Проверить ссылку") {
       await sendMessage(
