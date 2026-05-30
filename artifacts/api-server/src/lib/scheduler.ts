@@ -3,6 +3,7 @@ import { logger } from "./logger";
 import { sendToChannel } from "./telegram-bot";
 import { getPostForDate, formatPost, formatDangerAlert, getRubricForDate } from "./posts-pool";
 import { generateDailyNews } from "./ai-daily-news";
+import { generateAiBreakdown } from "./ai-breakdown";
 import { db, linkChecksTable } from "@workspace/db";
 import { eq, sql, and, gt } from "drizzle-orm";
 
@@ -26,7 +27,19 @@ export function startScheduler(): void {
       const now = new Date();
       const rubric = getRubricForDate(now);
       const post = getPostForDate(now);
-      const mainText = formatPost(post);
+
+      let mainText = formatPost(post);
+
+      if (rubric === "breakdown") {
+        const aiBreakdown = await generateAiBreakdown(now);
+        if (aiBreakdown) {
+          mainText = aiBreakdown;
+          logger.info({ date: now.toISOString() }, "Scheduler: using AI breakdown for today's post");
+        } else {
+          logger.info({ date: now.toISOString() }, "Scheduler: fallback to static breakdown post");
+        }
+      }
+
       const news = await generateDailyNews();
       const text = news ? `${mainText}\n\n${news}` : mainText;
 
