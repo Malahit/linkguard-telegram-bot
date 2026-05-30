@@ -21,6 +21,13 @@ COPY lib/ ./lib/
 COPY artifacts/api-server/ ./artifacts/api-server/
 RUN pnpm --filter @workspace/api-server run build
 
+# Test stage — devDeps already present from deps stage
+FROM deps AS tester
+COPY tsconfig.base.json tsconfig.json ./
+COPY lib/ ./lib/
+COPY artifacts/api-server/ ./artifacts/api-server/
+CMD ["pnpm", "--filter", "@workspace/api-server", "run", "test"]
+
 # Run migrations and start
 FROM node:24-alpine AS runner
 RUN corepack enable && corepack prepare pnpm@latest --activate
