@@ -20,7 +20,7 @@ export function isConfigured(): boolean {
   return !!(BOT_TOKEN && CHANNEL_ID);
 }
 
-// ─── Базовый вызов Telegram API ───────────────────────────────────────────────
+// ─── Базовый вызов Telegram API ────────────────────────────────────────────────────
 
 async function tgCall(
   method: string,
@@ -34,7 +34,7 @@ async function tgCall(
   return res.json() as Promise<{ ok: boolean; description?: string; result?: unknown }>;
 }
 
-// ─── Постоянная клавиатура «Проверить ссылку» ─────────────────────────────────
+// ─── Постоянная клавиатура «Проверить ссылку» ───────────────────────────────────────────
 
 const MAIN_KEYBOARD = {
   keyboard: [[{ text: "🔗 Проверить ссылку" }]],
@@ -42,7 +42,7 @@ const MAIN_KEYBOARD = {
   persistent: true,
 };
 
-// ─── Отправка сообщения пользователю ─────────────────────────────────────────
+// ─── Отправка сообщения пользователю ──────────────────────────────────────────────────
 
 async function sendMessage(
   chatId: number,
@@ -68,13 +68,13 @@ async function sendMessage(
   }
 }
 
-// ─── Индикатор «печатает...» ─────────────────────────────────────────────────
+// ─── Индикатор «печатает...» ─────────────────────────────────────────────────────────────
 
 async function sendTyping(chatId: number): Promise<void> {
   await tgCall("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
 }
 
-// ─── Отправка в канал ────────────────────────────────────────────────────────
+// ─── Отправка в канал ──────────────────────────────────────────────────────────────────────────
 
 export async function sendToChannel(
   text: string,
@@ -96,7 +96,7 @@ export async function sendToChannel(
       logger.error({ description: data.description }, "Telegram channel post error");
       return false;
     }
-    logger.info("Message sent to OpenClaw channel");
+    logger.info("Message sent to channel");
     return true;
   } catch (err) {
     logger.error({ err }, "Failed to send to channel");
@@ -104,13 +104,13 @@ export async function sendToChannel(
   }
 }
 
-// ─── /start ──────────────────────────────────────────────────────────────────
+// ─── /start ───────────────────────────────────────────────────────────────────────────────
 
 export async function handleStart(chatId: number, firstName: string): Promise<void> {
   const name = firstName ? ` ${firstName}` : "";
   const text =
     `👋 Привет${name}!\n\n` +
-    `Я — бот <b>OpenClaw</b>, твой помощник по цифровой безопасности.\n\n` +
+    `Я — бот канала <b>Без страха в сети</b>, твой помощник по цифровой безопасности.\n\n` +
     `🔗 Просто отправь мне любую подозрительную ссылку — я мгновенно проверю её и скажу человеческим языком: безопасно, осторожно или опасно.\n\n` +
     `<b>Как использовать:</b>\n` +
     `Нажми кнопку <b>«🔗 Проверить ссылку»</b> внизу — или просто вставь адрес прямо в чат.\n\n` +
@@ -127,12 +127,11 @@ export async function handleStart(chatId: number, firstName: string): Promise<vo
   });
 }
 
-// ─── Проверка ссылки через AI ─────────────────────────────────────────────────
+// ─── Проверка ссылки через AI ────────────────────────────────────────────────────────────────
 
 async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""): Promise<void> {
   await sendTyping(chatId);
 
-  // Стартовое сообщение
   await sendMessage(chatId, `🔍 Проверяю ссылку...\n<code>${rawUrl}</code>`);
 
   await sendTyping(chatId);
@@ -155,7 +154,7 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
       `${verdictEmoji} <b>${verdictLabel}</b>\n` +
       `<code>${risk.normalizedUrl}</code>\n\n` +
       `${aiText}\n\n` +
-      `━━━━━━━━━━━━━━━━\n` +
+      `────────────────\n` +
       `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>` +
       footerHint;
 
@@ -172,7 +171,7 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
   }
 }
 
-// ─── Обработка репорта опасной ссылки ────────────────────────────────────────
+// ─── Обработка репорта опасной ссылки ──────────────────────────────────────────────────
 
 async function handleReport(
   chatId: number,
@@ -191,7 +190,6 @@ async function handleReport(
     return;
   }
 
-  // Уведомляем администратора — шлём в ADMIN_CHAT_ID если задан, иначе пропускаем
   const adminChatId = process.env["ADMIN_CHAT_ID"];
   if (adminChatId) {
     const pendingTotal = await getPendingCount();
@@ -213,33 +211,30 @@ async function handleReport(
     `✅ <b>Спасибо! Жалоба #${id} принята.</b>\n\n` +
     `Ссылка <code>${url}</code> отправлена на ручную проверку.\n\n` +
     `Если она окажется опасной — обновим базу и защитим других пользователей. ` +
-    `Именно такие репорты делают OpenClaw лучше 💪`,
+    `Именно такие репорты делают бота лучше 💪`,
     { reply_markup: MAIN_KEYBOARD }
   );
 
   logger.info({ reportId: id, url, userId }, "URL report submitted by user");
 }
 
-// ─── Детектор URL в тексте ───────────────────────────────────────────────────
+// ─── Детектор URL в тексте ─────────────────────────────────────────────────────────────────────
 
 function extractUrl(text: string): string | null {
   const trimmed = text.trim();
-  // Прямая ссылка с протоколом
   if (/^https?:\/\//i.test(trimmed)) return trimmed.split(/\s/)[0];
-  // Домен без протокола (example.com, t.me/something)
   if (/^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})(\/\S*)?$/.test(trimmed)) {
     return trimmed;
   }
-  // Ссылка внутри текста
   const match = trimmed.match(/https?:\/\/[^\s]+/);
   return match ? match[0] : null;
 }
 
-// ─── /help ───────────────────────────────────────────────────────────────────
+// ─── /help ────────────────────────────────────────────────────────────────────────────────
 
 export async function handleHelp(chatId: number): Promise<void> {
   const text =
-    `<b>Как пользоваться OpenClaw:</b>\n\n` +
+    `<b>Как пользоваться ботом:</b>\n\n` +
     `1️⃣ Нажми кнопку <b>«🔗 Проверить ссылку»</b> внизу экрана\n` +
     `2️⃣ Вставь ссылку которую хочешь проверить и отправь\n` +
     `3️⃣ Получишь разбор от AI — что это за сайт, безопасно ли и что делать\n\n` +
@@ -253,7 +248,7 @@ export async function handleHelp(chatId: number): Promise<void> {
   await sendMessage(chatId, text, { reply_markup: MAIN_KEYBOARD });
 }
 
-// ─── Главный обработчик update ────────────────────────────────────────────────
+// ─── Главный обработчик update ──────────────────────────────────────────────────────────────────
 
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (!BOT_TOKEN) return;
@@ -264,7 +259,6 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     const firstName = from?.first_name ?? "";
     const isForwarded = !!forward_date;
 
-    // ── Пересланное сообщение ────────────────────────────────────────────────
     if (isForwarded) {
       const content = text || caption || "";
       const url = extractUrl(content);
@@ -278,7 +272,6 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
         return;
       }
 
-      // Откуда переслано
       let sourceLabel = "";
       if (forward_from_chat?.username) {
         sourceLabel = ` из канала @${forward_from_chat.username}`;
@@ -367,7 +360,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     if (text === "/channel") {
       await sendMessage(
         chatId,
-        `📢 Канал OpenClaw — <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>\n\nКаждый день советы по цифровой гигиене и разборы мошеннических схем.`,
+        `📢 <b>Без страха в сети</b> — <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>\n\nКаждый день советы по цифровой гигиене и разборы мошеннических схем.`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -379,7 +372,6 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
-    // Кнопка «Проверить ссылку» — просим прислать ссылку
     if (text === "🔗 Проверить ссылку") {
       await sendMessage(
         chatId,
@@ -389,12 +381,10 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
-    // Попытка найти URL в сообщении
     const url = extractUrl(text);
     if (url) {
       const userId = from?.id ?? chatId;
 
-      // Пользователь в режиме репорта — сохраняем как жалобу
       if (pendingReport.has(userId)) {
         pendingReport.delete(userId);
         await handleReport(chatId, userId, from?.username, url);
@@ -422,7 +412,6 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
         return;
       }
 
-      // Показываем остаток только когда мало осталось (≤ 5)
       const footerHint = rate.remaining <= 5
         ? `\n\n💡 Осталось проверок на сегодня: <b>${rate.remaining}</b>`
         : "";
@@ -431,7 +420,6 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
-    // Не URL и не команда — напоминаем что делать
     await sendMessage(
       chatId,
       `Отправь мне ссылку для проверки — или нажми кнопку внизу 👇`,
@@ -439,7 +427,6 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     );
   }
 
-  // Callback от inline-кнопок
   if (update.callback_query) {
     const { id, from, data } = update.callback_query;
     await tgCall("answerCallbackQuery", { callback_query_id: id });
@@ -449,7 +436,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   }
 }
 
-// ─── Настройка webhook и команд ───────────────────────────────────────────────
+// ─── Настройка webhook и команд ───────────────────────────────────────────────────────────────
 
 export async function setupBot(webhookUrl: string): Promise<void> {
   if (!BOT_TOKEN) {
@@ -458,7 +445,6 @@ export async function setupBot(webhookUrl: string): Promise<void> {
   }
 
   try {
-    // Устанавливаем webhook
     const webhookResult = await tgCall("setWebhook", {
       url: webhookUrl,
       allowed_updates: ["message", "callback_query"],
@@ -470,7 +456,6 @@ export async function setupBot(webhookUrl: string): Promise<void> {
       logger.error({ description: webhookResult.description }, "Failed to set webhook");
     }
 
-    // Устанавливаем команды в меню
     await tgCall("setMyCommands", {
       commands: [
         { command: "start", description: "Запустить бота" },
@@ -482,7 +467,6 @@ export async function setupBot(webhookUrl: string): Promise<void> {
     });
     logger.info("Bot commands set");
 
-    // Сбрасываем кнопку меню на стандартную (без мини-аппа)
     await tgCall("setChatMenuButton", {
       menu_button: { type: "default" },
     });
@@ -492,7 +476,7 @@ export async function setupBot(webhookUrl: string): Promise<void> {
   }
 }
 
-// ─── Типы ─────────────────────────────────────────────────────────────────────
+// ─── Типы ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface TelegramUpdate {
   update_id: number;
@@ -502,11 +486,10 @@ export interface TelegramUpdate {
     chat: { id: number; type: string };
     text?: string;
     caption?: string;
-    // Поля пересланных сообщений
     forward_date?: number;
     forward_from?: { id: number; first_name: string; username?: string };
     forward_from_chat?: { id: number; title?: string; username?: string; type: string };
-    forward_sender_name?: string; // когда отправитель скрыл профиль
+    forward_sender_name?: string;
   };
   callback_query?: {
     id: string;
