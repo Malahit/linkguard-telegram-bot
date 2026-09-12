@@ -1,0 +1,21 @@
+# Exclude host artifacts from the Docker build context.
+# Without this, COPY artifacts/... overwrites node_modules installed inside
+# the image with host symlinks that point to a different .pnpm store.
+
+**/node_modules
+**/dist
+**/.git
+**/.venv
+**/.venv_test
+**/__pycache__
+**/.pytest_cache
+**/.turbo
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
