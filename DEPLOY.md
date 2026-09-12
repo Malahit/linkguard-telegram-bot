@@ -128,3 +128,50 @@ ngrok http 80
 3. Включи **Web Risk API**
 4. Создай API-ключ: APIs & Services → Credentials → Create Credentials
 5. Добавь ключ в `.env` или Railway как `GOOGLE_SAFE_BROWSING_API_KEY`
+
+---
+
+## Ежедневный дайджест из источников
+
+Канал наполняется ежедневно в **10:00 MSK** дайджестом, собранным из публичных
+telegram-каналов (веб-превью `https://t.me/s/<slug>`). Без сессий и токенов.
+
+### Переменные окружения
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `SOURCE_CHANNELS` | Список `@username` через запятую | — |
+| `SOURCE_LOOKBACK_HOURS` | Окно свежести материалов, ч | `48` |
+| `SOURCE_MAX_ITEMS` | Макс. материалов в дайджесте | `10` |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | LLM для дайджеста (Perplexity `sonar`) | — |
+
+Пример:
+```
+SOURCE_CHANNELS=@cyberpolice_rus,@cyberyozh_official,@Social_engineering,@pro_infosec,@xakep_ru,@cisoclub,@true_osint
+```
+
+### Таблицы БД
+
+Схема применяется через drizzle-kit push (создаются только новые таблицы):
+```bash
+pnpm --filter @workspace/db run push
+```
+
+Таблицы: `sources`, `source_items` (дедуп по `source_id + external_id`),
+`channel_posts` (защита от повторной публикации).
+
+### Как работает
+
+1. Каждые 6 часов коллектор забирает новые посты всех включённых источников
+   (`source_items`, дедуп на уровне БД).
+2. В 10:00 MSK формируется дайджест из свежих неиспользованных материалов
+   (`used_at IS NULL`), LLM перерабатывает их в текст поста.
+3. Перед отправкой проверяется `channel_posts.title_hash` — повтор не публикуется.
+4. Если свежих материалов нет — пост не отправляется (новости не «выдумываются»).
+
+### Обновление
+
+```bash
+git pull
+docker compose up -d --build api
+```

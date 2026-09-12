@@ -5,7 +5,6 @@ import { checkRateLimit, peekRateLimit, timeUntilResetText } from "./rate-limite
 import { saveReport, getPendingCount } from "./report-store";
 import { generateDraftForDate } from "./post-generator";
 import { getDraft, deleteDraft, listDrafts, todayKey } from "./draft-store";
-import { sendToChannel } from "./telegram-bot";
 import { db, linkChecksTable } from "@workspace/db";
 import { sql, gt } from "drizzle-orm";
 

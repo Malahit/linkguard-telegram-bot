@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { startScheduler } from "./lib/scheduler";
 import { setupBot } from "./lib/telegram-bot";
+import { seedSourcesFromEnv } from "./lib/source-collector";
 
 const rawPort = process.env["PORT"];
 
@@ -25,6 +26,11 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
   startScheduler();
+
+  // Источники дайджеста из env SOURCE_CHANNELS (идемпотентно)
+  void seedSourcesFromEnv()
+    .then((count) => logger.info({ count }, "Sources seeded from SOURCE_CHANNELS"))
+    .catch((err) => logger.warn({ err }, "Source seeding failed"));
 
   // Register Telegram webhook from env (works on VPS and any hosting)
   const webhookUrl = process.env["TELEGRAM_WEBHOOK_URL"];
