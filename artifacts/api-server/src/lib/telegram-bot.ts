@@ -1,13 +1,32 @@
 import { logger } from "./logger";
 import { checkUrl } from "./risk-engine";
-import { generateAiRecommendation } from "./ai-recommendation";
+import { checkEmail, extractEmail } from "./email-check";
+import { generateAiRecommendation, generateEmailRecommendation, generateForwardedEmailRecommendation, checkSenderDeep } from "./ai-recommendation";
 import { checkRateLimit, peekRateLimit, timeUntilResetText } from "./rate-limiter";
 import { saveReport, getPendingCount } from "./report-store";
+import { generateDraftForDate } from "./post-generator";
+import { getDraft, deleteDraft, listDrafts, todayKey } from "./draft-store";
+import { sendToChannel } from "./telegram-bot";
+import { pollNewMails, extractConfirmationCode, isMailboxConfigured } from "./mail-inbox";
+import { checkForwardedEmail } from "./forwarded-email-check";
+import type { ForwardedEmailResult } from "./forwarded-email-check";
+import type { ParsedEmailMessage } from "./email-message";
 import { db, linkChecksTable } from "@workspace/db";
-import { sql, and, gt } from "drizzle-orm";
+import { sql, gt } from "drizzle-orm";
 
 // Пользователи в режиме ожидания ссылки для репорта
 const pendingReport = new Set<number>();
+
+// Ожидание пересланного письма: telegramId -> код подтверждения
+interface PendingMail {
+  code: string;
+  createdAt: number;
+}
+const pendingForwards = new Map<number, PendingMail>();
+
+const MAIL_INBOX_ADDRESS = process.env["MAIL_INBOX_ADDRESS"];
+const MAIL_CODE_EXPIRY_MS =
+  Number(process.env["MAIL_CODE_EXPIRY_MIN"] ?? 30) * 60 * 1000;
 
 const BOT_TOKEN = process.env["TELEGRAM_BOT_TOKEN"];
 const CHANNEL_ID = process.env["OPENCLAW_CHANNEL_ID"];
@@ -37,10 +56,14 @@ async function tgCall(
   return res.json() as Promise<{ ok: boolean; description?: string; result?: unknown }>;
 }
 
-// ─── Постоянная клавиатура «Проверить ссылку» ───────────────────────────────────────────
+// ─── Постоянная клавиатура «Проверить ссылку» / «Проверить email» / «Проверить письмо» ───────
 
 const MAIN_KEYBOARD = {
-  keyboard: [[{ text: "🔗 Проверить ссылку" }]],
+  keyboard: [
+    [{ text: "🔗 Проверить ссылку" }],
+    [{ text: "✉️ Проверить email" }],
+    [{ text: "📧 Проверить письмо" }],
+  ],
   resize_keyboard: true,
   persistent: true,
 };
@@ -165,8 +188,12 @@ export async function handleStart(chatId: number, firstName: string, userId: num
     `👋 Привет${name}!\n\n` +
     `Я — бот канала <b>Без страха в сети</b>, твой помощник по цифровой безопасности.\n\n` +
     `🔗 Просто отправь мне любую подозрительную ссылку — я мгновенно проверю её и скажу человеческим языком: безопасно, осторожно или опасно.\n\n` +
+    `✉️ А ещё я умею проверять <b>email-адреса</b> — например, адрес того, кто прислал тебе письмо: безопасный он или фишинговый.\n\n` +
+    `📧 А если прислали подозрительное <b>письмо целиком</b> — перешли его мне, и я разберу отправителя, ссылки и вложения.\n\n` +
     `<b>Как использовать:</b>\n` +
     `Нажми кнопку <b>«🔗 Проверить ссылку»</b> внизу — или просто вставь адрес прямо в чат.\n\n` +
+    `Чтобы проверить отправителя письма — нажми <b>«✉️ Проверить email»</b> и вставь email-адрес.\n\n` +
+    `Чтобы разобрать <b>само письмо</b> — нажми <b>«📧 Проверить письмо»</b> и следуй инструкции.\n\n` +
     `📢 Каждый день в канале <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a> — ` +
     `советы по цифровой гигиене и разборы мошеннических схем.`;
 
@@ -211,7 +238,6 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
       `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>` +
       footerHint;
 
-    // Инлайн-кнопка «Отчёт VirusTotal» если есть пермалинк
     const inlineKeyboard = risk.vtPermalink
       ? [[{ text: "🔎 Отчёт VirusTotal", url: risk.vtPermalink }]]
       : undefined;
@@ -229,6 +255,205 @@ async function handleLinkCheck(chatId: number, rawUrl: string, footerHint = ""):
       { reply_markup: MAIN_KEYBOARD }
     );
   }
+}
+
+// ─── Проверка email-адреса ────────────────────────────────────────────────────────────────────
+
+async function handleEmailCheck(chatId: number, rawEmail: string, footerHint = ""): Promise<void> {
+  await sendTyping(chatId);
+  await sendMessage(chatId, `🔍 Проверяю email-адрес...\n<code>${rawEmail}</code>`);
+  await sendTyping(chatId);
+
+  try {
+    let risk = await checkEmail(rawEmail);
+
+    // Углублённая AI-проверка отправителя, если адрес похож на компанию на бесплатной почте
+    let deepSenderText: string | null = null;
+    if (risk.senderNeedsAiCheck) {
+      await sendTyping(chatId);
+      const deep = await checkSenderDeep(rawEmail, risk.senderAiReason ?? "адрес похож на контакт компании");
+      if (deep) {
+        deepSenderText = deep.reasoning;
+        if (deep.verdict === "danger") {
+          risk = { ...risk, verdict: "danger", threatTypes: [...risk.threatTypes, "EMAIL_DEEP_DANGER"] };
+        } else if (deep.verdict === "safe") {
+          risk = {
+            ...risk,
+            verdict: "safe",
+            suggestsDeepCheck: false,
+            explanation: `Подтверждено: ${deep.reasoning}`,
+          };
+        } else {
+          risk = { ...risk, verdict: "caution", explanation: `${risk.explanation}\n${deep.reasoning}` };
+        }
+      }
+    }
+
+    const aiText = await generateEmailRecommendation(rawEmail, risk);
+
+    const verdictEmoji =
+      risk.verdict === "safe" ? "✅" :
+      risk.verdict === "caution" ? "⚠️" :
+      risk.verdict === "danger" ? "🚫" : "❓";
+
+    const verdictLabel =
+      risk.verdict === "safe" ? "Безопасно" :
+      risk.verdict === "caution" ? "Осторожно" :
+      risk.verdict === "danger" ? "Опасно" : "Неизвестно";
+
+    const mxLine = risk.mx
+      ? risk.mx.hasMx
+        ? risk.mx.providerName
+          ? `🛰 Домен существует, почта через <b>${risk.mx.providerName}</b>\n`
+          : "🛰 Домен существует и принимает почту\n"
+        : "🛰 Домен <b>не</b> принимает почту — адрес, скорее всего, выдуман\n"
+      : "";
+
+    const deepLine = deepSenderText
+      ? `🤖 Углублённая проверка: ${deepSenderText}\n`
+      : "";
+
+    const deepCheckOffer = risk.suggestsDeepCheck
+      ? `\n\n🤔 Чтобы узнать точно, открой письмо и нажми «📧 Проверить письмо» — я разберу письмо целиком (адрес, ссылки, вложение).`
+      : "";
+
+    const responseText =
+      `${verdictEmoji} <b>${verdictLabel}</b>\n` +
+      `<code>${risk.normalizedEmail}</code>\n\n` +
+      `${aiText}\n\n` +
+      `${deepLine}` +
+      `${mxLine}` +
+      `────────────────\n` +
+      `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>` +
+      footerHint +
+      deepCheckOffer;
+
+    await sendMessage(chatId, responseText, { reply_markup: MAIN_KEYBOARD });
+  } catch (err) {
+    logger.error({ err, rawEmail }, "Email check failed in bot");
+    await sendMessage(
+      chatId,
+      "❌ Не удалось проверить email-адрес. Попробуй ещё раз — просто отправь адрес заново.",
+      { reply_markup: MAIN_KEYBOARD }
+    );
+  }
+}
+
+// ─── Проверка пересланного письма ──────────────────────────────────────────────────────────
+
+function generateConfirmationCode(): string {
+  return String(Math.floor(100_000 + Math.random() * 900_000));
+}
+
+async function sendMailInstruction(chatId: number): Promise<PendingMail | null> {
+  if (!MAIL_INBOX_ADDRESS || !isMailboxConfigured()) {
+    await sendMessage(
+      chatId,
+      `⚠️ Проверка писем пока не настроена.
+
+А пока могу сказать, что обычно тот же результат получается при отдельной проверке email и ссылок из письма — нажми «🔗 Проверить ссылку» или «✉️ Проверить email».
+
+Напиши админу, чтобы включили режим писем.`,
+      { reply_markup: MAIN_KEYBOARD }
+    );
+    return null;
+  }
+
+  const code = generateConfirmationCode();
+  pendingForwards.set(chatId, { code, createdAt: Date.now() });
+
+  await sendMessage(
+    chatId,
+    `📧 <b>Проверить письмо</b>\n\n` +
+    `Перешли подозрительное письмо на адрес бота:\n\n` +
+    `<code>${MAIL_INBOX_ADDRESS}</code>\n\n` +
+    `Чтобы я понял, что письмо твоё, впиши код: <b>${code}</b>\n` +
+    `в <b>тему письма</b> или первой строкой — рядом с оригиналом.\n\n` +
+    `⏳ Не забудь нажать кнопку <b>«✅ Переслал(а)»</b> ниже, когда отправишь.\n` +
+    `Если письмо не дойдёт, можно нажать кнопку ещё раз.`,
+    {
+      reply_markup: {
+        ...MAIN_KEYBOARD,
+        inline_keyboard: [
+          [{ text: "✅ Переслал(а)", callback_data: "mail_forwarded" }],
+        ],
+      },
+    }
+  );
+  return { code, createdAt: Date.now() };
+}
+
+// Поиск ожидающего кода для пользователя, ищем письмо по коду
+async function resolveForwardedMail(chatId: number): Promise<ParsedEmailMessage | null> {
+  const pending = pendingForwards.get(chatId);
+  if (!pending || Date.now() - pending.createdAt > MAIL_CODE_EXPIRY_MS) {
+    pendingForwards.delete(chatId);
+    return null;
+  }
+
+  const mails = await pollNewMails(10);
+  if (mails.length === 0) return null;
+
+  // Сначала ищем совпадение по коду
+  for (const m of mails) {
+    if (extractConfirmationCode(m) === pending.code) {
+      return m.message;
+    }
+  }
+
+  // Если пользователь — единственный «ожидающий», берём самое свежее письмо
+  const otherWaiters = [...pendingForwards.keys()].filter((id) => id !== chatId);
+  if (otherWaiters.length === 0) {
+    return mails[mails.length - 1].message;
+  }
+
+  return null;
+}
+
+async function handleForwardedCheck(chatId: number, emailMsg: ParsedEmailMessage): Promise<void> {
+  await sendTyping(chatId);
+
+  try {
+    const result = await checkForwardedEmail(emailMsg, true);
+    await sendMailReport(chatId, emailMsg, result);
+  } catch (err) {
+    logger.error({ err, chatId }, "Forwarded email check failed");
+    await sendMessage(
+      chatId,
+      "❌ Не удалось разобрать письмо. Попробуй ещё раз, или проверь адрес и ссылки из письма отдельно.",
+      { reply_markup: MAIN_KEYBOARD }
+    );
+  }
+}
+
+async function sendMailReport(
+  chatId: number,
+  emailMsg: ParsedEmailMessage,
+  result: ForwardedEmailResult
+): Promise<void> {
+  const emoji =
+    result.verdict === "safe" ? "✅" :
+    result.verdict === "caution" ? "⚠️" :
+    result.verdict === "danger" ? "🚫" : "❓";
+
+  const label =
+    result.verdict === "safe" ? "Письмо не вызывая подозрений" :
+    result.verdict === "caution" ? "Осторожно — лучше не вскрывать" :
+    result.verdict === "danger" ? "Письмо похоже на мошенническое" : "Неясно";
+
+  const parts: string[] = [];
+  if (emailMsg.fromAddress) parts.push(`От: <code>${emailMsg.fromAddress}</code>`);
+  if (emailMsg.subject) parts.push(`Тема: <code>${emailMsg.subject}</code>`);
+  parts.push(`\n${result.explanation}`);
+  if (result.aiText) parts.push(`\n${result.aiText}`);
+
+  const text =
+    `${emoji} <b>${label}</b>\n\n` +
+    parts.join("\n") +
+    `\n\n────────────────\n` +
+    `📢 Больше советов: <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a>`;
+
+  await sendMessage(chatId, text, { reply_markup: MAIN_KEYBOARD });
 }
 
 // ─── Обработка репорта опасной ссылки ──────────────────────────────────────────────────
@@ -277,6 +502,129 @@ async function handleReport(
   logger.info({ reportId: id, url, userId }, "URL report submitted by user");
 }
 
+// ─── /draft — сгенерировать черновик (только для админа) ─────────────────────
+
+async function handleDraft(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  await sendTyping(chatId);
+  await sendMessage(chatId, "⏳ Генерирую черновик поста...");
+
+  try {
+    const text = await generateDraftForDate(new Date());
+    const dateKey = todayKey();
+
+    await sendMessage(
+      chatId,
+      `📝 <b>Черновик на ${dateKey}</b>\n\n` +
+      `─────────────────────\n\n` +
+      text +
+      `\n\n─────────────────────\n\n` +
+      `✅ /approve — опубликовать\n` +
+      `🗑 /discard — удалить черновик`
+    );
+  } catch (err) {
+    logger.error({ err }, "Failed to generate draft");
+    await sendMessage(chatId, "❌ Не удалось сгенерировать черновик.");
+  }
+}
+
+// ─── /approve — опубликовать черновик (только для админа) ────────────────────
+
+async function handleApprove(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  const dateKey = todayKey();
+  const draft = getDraft(dateKey);
+
+  if (!draft) {
+    await sendMessage(
+      chatId,
+      `⚠️ Черновик на <b>${dateKey}</b> не найден.\n\nСначала сгенерируй его: /draft`
+    );
+    return;
+  }
+
+  await sendTyping(chatId);
+
+  const ok = await sendToChannel(draft.text);
+
+  if (ok) {
+    deleteDraft(dateKey);
+    await sendMessage(
+      chatId,
+      `✅ <b>Пост за ${dateKey} опубликован в канале!</b>\n\n` +
+      `Черновик удалён.`
+    );
+    logger.info({ dateKey }, "Draft approved and published");
+  } else {
+    await sendMessage(
+      chatId,
+      `❌ Не удалось отправить пост в канал.\nЧерновик сохранён — попробуй /approve снова.`
+    );
+  }
+}
+
+// ─── /discard — удалить черновик (только для админа) ─────────────────────────
+
+async function handleDiscard(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  const dateKey = todayKey();
+  const deleted = deleteDraft(dateKey);
+
+  if (deleted) {
+    await sendMessage(
+      chatId,
+      `🗑 Черновик на <b>${dateKey}</b> удалён.\n\nСоздать новый: /draft`
+    );
+    logger.info({ dateKey }, "Draft discarded");
+  } else {
+    await sendMessage(
+      chatId,
+      `⚠️ Черновик на <b>${dateKey}</b> не найден — возможно, уже удалён.`
+    );
+  }
+}
+
+// ─── /drafts — список всех черновиков (только для админа) ────────────────────
+
+async function handleDraftsList(chatId: number): Promise<void> {
+  if (!ADMIN_CHAT_ID || chatId !== Number(ADMIN_CHAT_ID)) {
+    await sendMessage(chatId, "🚫 Команда недоступна.", { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+
+  const drafts = listDrafts();
+
+  if (drafts.length === 0) {
+    await sendMessage(chatId, `📭 Черновиков нет.\n\nСоздать на сегодня: /draft`);
+    return;
+  }
+
+  const lines = drafts.map((d) => {
+    const age = Math.round((Date.now() - d.createdAt) / 60_000);
+    const ageStr = age < 60 ? `${age} мин. назад` : `${Math.round(age / 60)} ч. назад`;
+    return `• <b>${d.date}</b> — создан ${ageStr}`;
+  });
+
+  await sendMessage(
+    chatId,
+    `📋 <b>Черновики (${drafts.length}):</b>\n\n` +
+    lines.join("\n") +
+    `\n\n/approve — опубликовать сегодняшний\n/discard — удалить сегодняшний`
+  );
+}
+
 // ─── Детектор URL в тексте ─────────────────────────────────────────────────────────────────────
 
 function extractUrl(text: string): string | null {
@@ -298,9 +646,18 @@ export async function handleHelp(chatId: number): Promise<void> {
     `2️⃣ Вставь ссылку которую хочешь проверить и отправь\n` +
     `3️⃣ Получишь разбор от AI — что это за сайт, безопасно ли и что делать\n\n` +
     `Можно также просто вставить адрес прямо в чат — без нажатия кнопки.\n\n` +
+    `✉️ <b>Проверить email-адрес:</b>\n` +
+    `1️⃣ Нажми кнопку <b>«✉️ Проверить email»</b> внизу экрана\n` +
+    `2️⃣ Вставь email-адрес (например, того, кто прислал письмо) и отправь\n` +
+    `3️⃣ Получишь вердикт: безопасный адрес или фишинговый\n\n` +
+    `📧 <b>Проверить письмо целиком:</b>\n` +
+    `1️⃣ Нажми кнопку <b>«📧 Проверить письмо»</b> внизу экрана\n` +
+    `2️⃣ Перешли подозрительное письмо на адрес, который покажет бот (впиши туда код)\n` +
+    `3️⃣ Нажми «✅ Переслал(а)» — получишь разбор всего письма: отправитель, ссылки, вложения\n\n` +
     `<b>Советы:</b>\n` +
-    `• Проверяй ссылки из незнакомых сообщений и SMS\n` +
+    `• Проверяй ссылки и адреса из незнакомых сообщений и SMS\n` +
     `• Особенно осторожно с сокращёнными ссылками (bit.ly, tinyurl и т.п.)\n` +
+    `• Проверяй email отправителя, если письмо просит пароль, деньги или данные\n` +
     `• Подписывайся на канал — там разборы реальных схем мошенников\n\n` +
     `📢 <a href="https://t.me/bezstrahavseti">@bezstrahavseti</a> — канал о цифровой безопасности`;
 
@@ -459,12 +816,89 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
+    // ─── Черновик-режим (только для админа) ──────────────────────────────────
+
+    if (text === "/draft") {
+      await handleDraft(chatId);
+      return;
+    }
+
+    if (text === "/approve") {
+      await handleApprove(chatId);
+      return;
+    }
+
+    if (text === "/discard") {
+      await handleDiscard(chatId);
+      return;
+    }
+
+    if (text === "/drafts") {
+      await handleDraftsList(chatId);
+      return;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (text === "🔗 Проверить ссылку") {
       await sendMessage(
         chatId,
         `Отправь мне ссылку которую хочешь проверить 👇\n\nМожно вставить адрес целиком, например:\n<code>https://example.com/some-page</code>`,
         { reply_markup: { force_reply: true, selective: true } }
       );
+      return;
+    }
+
+    if (text === "✉️ Проверить email") {
+      await sendMessage(
+        chatId,
+        `Отправь мне email-адрес который хочешь проверить 👇\n\nНапример, адрес отправителя подозрительного письма:\n<code>support@example.com</code>`,
+        { reply_markup: { force_reply: true, selective: true } }
+      );
+      return;
+    }
+
+    if (text === "📧 Проверить письмо") {
+      await sendMailInstruction(chatId);
+      return;
+    }
+
+    const email = extractEmail(text);
+    if (email) {
+      const userId = from?.id ?? chatId;
+
+      if (pendingReport.has(userId)) {
+        pendingReport.delete(userId);
+        await handleReport(chatId, userId, from?.username, email);
+        return;
+      }
+
+      const rate = checkRateLimit(userId);
+
+      if (!rate.allowed) {
+        await sendMessage(
+          chatId,
+          `⏳ <b>Лимит на сегодня исчерпан</b>\n\n` +
+          `Ты уже проверил ${rate.limit} ссылок за сегодня — это максимум для одного аккаунта в сутки.\n\n` +
+          `Счётчик обнулится <b>${timeUntilResetText()}</b> (в полночь по UTC).\n\n` +
+          `Пока что можешь почитать советы по безопасности в канале 👇`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📢 Канал @bezstrahavseti", url: "https://t.me/bezstrahavseti" }],
+              ],
+            },
+          }
+        );
+        logger.info({ userId, limit: rate.limit }, "Rate limit exceeded (email)");
+        return;
+      }
+
+      const footerHint = rate.remaining <= 5
+        ? `\n\n💡 Осталось проверок на сегодня: <b>${rate.remaining}</b>`
+        : "";
+
+      await handleEmailCheck(chatId, email, footerHint);
       return;
     }
 
@@ -509,7 +943,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
 
     await sendMessage(
       chatId,
-      `Отправь мне ссылку для проверки — или нажми кнопку внизу 👇`,
+      `Отправь мне ссылку или email-адрес для проверки — или нажми кнопку внизу 👇`,
       { reply_markup: MAIN_KEYBOARD }
     );
   }
@@ -519,6 +953,51 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     await tgCall("answerCallbackQuery", { callback_query_id: id });
     if (data === "help") {
       await handleHelp(from.id);
+    } else if (data === "mail_forwarded") {
+      const chatId = from.id;
+      const pending = pendingForwards.get(chatId);
+      if (!pending || Date.now() - pending.createdAt > MAIL_CODE_EXPIRY_MS) {
+        pendingForwards.delete(chatId);
+        await sendMessage(
+          chatId,
+          `⚠️ Код подтверждения устарел (или письма ещё не было).\n\nНажми «📧 Проверить письмо» ещё раз и пошли письмо заново.`,
+          { reply_markup: MAIN_KEYBOARD }
+        );
+        return;
+      }
+
+      await sendTyping(chatId);
+      await sendMessage(chatId, "📨 Ищу твоё письмо во входящих...");
+
+      const mails = await pollNewMails(10);
+      if (mails.length === 0) {
+        await sendMessage(
+          chatId,
+          `📭 Пока не нашёл письмо на ${MAIL_INBOX_ADDRESS ?? "адрес бота"}.\n\nПроверь, что переслал его с кодом <b>${pending.code}</b>, и нажми «✅ Переслал(а)» ещё раз.`,
+          { reply_markup: MAIN_KEYBOARD }
+        );
+        return;
+      }
+
+      let matched = mails.find((m) => extractConfirmationCode(m) === pending.code);
+      if (!matched) {
+        const otherWaiters = [...pendingForwards.keys()].filter((c) => c !== chatId);
+        if (otherWaiters.length === 0) {
+          matched = mails[mails.length - 1];
+        }
+      }
+
+      if (!matched) {
+        await sendMessage(
+          chatId,
+          `ℹ️ Письмо пришло, но я не нашёл в нём твой код <b>${pending.code}</b>.\n\nПопробуй ещё раз: перешли письмо заново с кодом в теме или первым словом.`,
+          { reply_markup: MAIN_KEYBOARD }
+        );
+        return;
+      }
+
+      pendingForwards.delete(chatId);
+      await handleForwardedCheck(chatId, matched.message);
     }
   }
 }

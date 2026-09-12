@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { startScheduler } from "./lib/scheduler";
 import { setupBot } from "./lib/telegram-bot";
+import { isMailboxConfigured } from "./lib/mail-inbox";
 
 const rawPort = process.env["PORT"];
 
@@ -25,6 +26,12 @@ app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
   startScheduler();
+
+  if (isMailboxConfigured()) {
+    logger.info({ inbox: process.env["MAIL_INBOX_ADDRESS"] }, "Mailbox polling ready — forwarded emails are fetched on demand");
+  } else {
+    logger.warn("IMAP not configured — forwarded email checks disabled");
+  }
 
   // Register Telegram webhook from env (works on VPS and any hosting)
   const webhookUrl = process.env["TELEGRAM_WEBHOOK_URL"];
