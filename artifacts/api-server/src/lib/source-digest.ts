@@ -1,15 +1,15 @@
 /**
  * source-digest.ts
  *
- * Собирает ежедневный дайджест канала @bezstrahavseti из материалов,
- * собранных коллектором (source-collector) из профильных telegram-каналов.
- * В отличие от прежнего generateDailyNews — не «выдумывает» новости
- * свободным веб-поиском, а перерабатывает конкретные посты источников.
+ * Собирает ежедневный практический пост канала @bezstrahavseti из материалов
+ * профильных telegram-каналов. Название модуля и интерфейс сохранены
+ * для совместимости с планировщиком.
  */
 import OpenAI from "openai";
 import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import { db, sourceItemsTable, sourcesTable, channelPostsTable } from "@workspace/db";
 import { logger } from "./logger";
+import { buildEditorialPrompts } from "./channel-editorial";
 
 export { contentHash } from "./content-utils";
 
@@ -39,13 +39,10 @@ function buildFooter(): string {
   return '\n\n🔗 <a href="https://t.me/bezstrahavseti">Без страха в сети</a>';
 }
 
-/**
- * Формирует дайджест из свежих неиспользованных материалов источников.
- * Возвращает null, если материалов нет или LLM недоступна.
- * Успешно использованные материалы помечаются used_at.
- */
+/** Возвращает null, если материалов нет или LLM недоступна. */
 export async function buildSourceDigest(): Promise<SourceDigest | null> {
-  const since = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000);
+  const now = new Date();
+  const since = new Date(now.getTime() - LOOKBACK_HOURS * 60 * 60 * 1000);
 
   const items = await db
     .select({
@@ -88,34 +85,20 @@ export async function buildSourceDigest(): Promise<SourceDigest | null> {
   const materials = items
     .map((item, idx) => {
       const source = item.sourceTitle ?? `@${item.sourceSlug}`;
-      return `[${idx + 1}] Источник: ${source}\n${item.text.slice(0, MAX_ITEM_CHARS)}`;
+      return `[${idx + 1}] Источник: ${source}\nСсылка на исходный пост: ${item.sourceUrl ?? "не указана"}\n${item.text.slice(0, MAX_ITEM_CHARS)}`;
     })
     .join("\n\n");
 
-  const today = new Date().toLocaleDateString("ru-RU", {
+  const today = now.toLocaleDateString("ru-RU", {
     day: "numeric",
     month: "long",
     year: "numeric",
+    timeZone: "UTC",
   });
 
-  const systemPrompt = `Ты — редактор Telegram-канала @bezstrahavseti о цифровой безопасности для обычных людей (подростки 12–18 и родители).
-Стиль: живой, человечный, без занудства и запугивания. Без звёздочек и Markdown-разметки.
-Аудитория: подростки и родители, не специалисты по ИБ.`;
-
-  const userPrompt = `Ниже — свежие материалы из профильных каналов по безопасности за ${today}.
-Сделай из них короткий дайджест для канала @bezstrahavseti.
-
-Требования:
-- 2–4 коротких пункта (абзаца), каждый — отдельная тема/угроза
-- Пиши своими словами, не копируй тексты дословно
-- Практическая польза: что делать или чего избегать
-- Без хэштегов и без заголовка «Дайджест»
-- В конце — одна строка с призывом проверять подозрительные ссылки через бота
-- Не повторяй темы из списка уже опубликованного: ${avoid.length > 0 ? avoid.join("; ") : "нет"}
-- Объём: 150–250 слов
-
-Материалы:
-${materials}`;
+  const { systemPrompt, userPrompt } = buildEditorialPrompts({
+    date: now, today, materials, avoid,
+  });
 
   try {
     const response = await client.chat.completions.create({
