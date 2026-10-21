@@ -6,10 +6,28 @@ import { sendToChannel } from "./telegram-bot";
 import { formatDangerAlert } from "./posts-pool";
 import { seedSourcesFromEnv, collectAllSources } from "./source-collector";
 import { buildSourceDigest, contentHash } from "./source-digest";
+import { generatePostForDate } from "./post-generator";
+import { getRubricForDate } from "./posts-pool";
 
 const alertedUrls = new Set<string>();
 
 const BOT_URL = "https://t.me/chistyi_signal_bot";
+
+// Повторная публикация идентичного текста допустима только раньше, чем через
+// REPOST_GUARD_HOURS, — защита от дубля при рестарте процесса в один день.
+// Сами рубрики из пула повторяются раз в ~8 недель — это нормальная ротация.
+const REPOST_GUARD_HOURS = 40;
+
+const RUBRIC_LABEL: Record<string, string> = {
+  hygiene: "🧼 Гигиена",
+  breakdown: "🎣 Разбор",
+  tool: "🛠 Инструмент",
+  quiz: "🧪 Проверь себя",
+  story: "📖 История",
+};
+
+// Кнопка «проверить ссылку» в каждом посте (возвращена в 3657fe2).
+const CHECK_BUTTON = [[{ text: "🔗 Проверить ссылку", url: BOT_URL }]];
 
 /** Сбор материалов из источников (best-effort, без падения джобы). */
 async function collectSources(): Promise<void> {
@@ -22,13 +40,13 @@ async function collectSources(): Promise<void> {
   }
 }
 
-/** Ежедневный пост = дайджест из материалов источников (10:00 MSK). */
+/** Воскресный пост = дайджест из материалов источников (10:00 MSK). */
 async function publishDailyDigest(): Promise<void> {
   try {
     await collectSources();
     const digest = await buildSourceDigest();
     if (!digest) {
-      logger.warn("Daily digest: no fresh source material — post skipped");
+      logger.warn("Sunday digest: no fresh source material — post skipped");
       return;
     }
 
@@ -39,7 +57,7 @@ async function publishDailyDigest(): Promise<void> {
       .where(eq(channelPostsTable.titleHash, hash))
       .limit(1);
     if (existing.length > 0) {
-      logger.info("Daily digest: already published, skipped");
+      logger.info("Sunday digest: already published, skipped");
       return;
     }
 
@@ -50,11 +68,9 @@ async function publishDailyDigest(): Promise<void> {
         .find((line) => line.length > 0)
         ?.slice(0, 120) ?? "Дайджест";
 
-    const ok = await sendToChannel(digest.text, [
-      [{ text: "🔗 Проверить ссылку", url: BOT_URL }],
-    ]);
+    const ok = await sendToChannel(digest.text, CHECK_BUTTON);
     if (!ok) {
-      logger.error("Daily digest: sendToChannel failed");
+      logger.error("Sunday digest: sendToChannel failed");
       return;
     }
 
@@ -62,15 +78,81 @@ async function publishDailyDigest(): Promise<void> {
       .insert(channelPostsTable)
       .values({ postType: "digest", titleHash: hash, title, text: digest.text })
       .onConflictDoNothing();
-    logger.info({ title }, "Daily digest sent to channel");
+    logger.info({ title }, "Sunday digest sent to channel");
   } catch (err) {
-    logger.error({ err }, "Daily digest job failed");
+    logger.error({ err }, "Sunday digest job failed");
+  }
+}
+
+/**
+ * Ежедневный пост по рубрике (CONTENT_PLAN.md, пн–сб, 10:00 MSK):
+ *   пн/чт — 🧼 гигиена, вт — 🎣 разбор, ср — 🛠 инструмент,
+ *   пт — 🧪 проверь себя, сб — 📖 история.
+ * Динамические рубрики (разбор/инструмент/история) сначала пробует AI,
+ * при недоступности LLM берет статический пост из posts-pool.
+ */
+async function publishRubricPost(): Promise<void> {
+  try {
+    const now = new Date();
+    const rubric = getRubricForDate(now);
+    const text = await generatePostForDate(now);
+
+    const hash = contentHash(text);
+    const guardSince = new Date(Date.now() - REPOST_GUARD_HOURS * 60 * 60 * 1000);
+    const existing = await db
+      .select({ id: channelPostsTable.id })
+      .from(channelPostsTable)
+      .where(
+        and(eq(channelPostsTable.titleHash, hash), gt(channelPostsTable.publishedAt, guardSince))
+      )
+      .limit(1);
+    if (existing.length > 0) {
+      logger.info("Rubric post: identical text already published recently, skipped");
+      return;
+    }
+
+    const title =
+      text
+        .split("\n")
+        .map((line) => line.replace(/<[^>]+>/g, "").trim())
+        .find((line) => line.length > 0)
+        ?.slice(0, 120) ?? "Пост";
+
+    const ok = await sendToChannel(text, CHECK_BUTTON);
+    if (!ok) {
+      logger.error("Rubric post: sendToChannel failed");
+      return;
+    }
+
+    await db
+      .insert(channelPostsTable)
+      .values({ postType: "rubric", titleHash: hash, title, text })
+      .onConflictDoNothing();
+    logger.info(
+      { rubric: RUBRIC_LABEL[rubric] ?? rubric, title },
+      "Rubric post sent to channel"
+    );
+  } catch (err) {
+    logger.error({ err }, "Rubric post job failed");
   }
 }
 
 export function startScheduler(): void {
-  // Ежедневный дайджест из источников в 10:00 MSK (07:00 UTC)
-  cron.schedule("0 7 * * *", () => void publishDailyDigest(), { timezone: "UTC" });
+  // Ежедневный пост в 10:00 MSK (07:00 UTC):
+  // воскресенье — дайджест источников, остальная неделя — рубрики CONTENT_PLAN.
+  cron.schedule(
+    "0 7 * * *",
+    () => {
+      const today = new Date();
+      // Date.getDay(): 0 = воскресенье
+      if (today.getDay() === 0) {
+        void publishDailyDigest();
+      } else {
+        void publishRubricPost();
+      }
+    },
+    { timezone: "UTC" }
+  );
 
   // Промежуточный сбор материалов каждые 6 часов, чтобы накопить свежие посты
   cron.schedule(
@@ -79,8 +161,10 @@ export function startScheduler(): void {
     { timezone: "UTC" },
   );
 
+  const todayRubric = getRubricForDate(new Date());
   logger.info(
-    "Scheduler started — source digest daily at 10:00 MSK, collect every 6h",
+    { todayRubric: RUBRIC_LABEL[todayRubric] ?? todayRubric },
+    "Scheduler started — rubric post daily at 10:00 MSK (Sun: source digest), collect every 6h"
   );
 }
 
