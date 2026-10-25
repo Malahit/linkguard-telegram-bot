@@ -4,7 +4,7 @@ import cron from "node-cron";
 import { eq, sql, and, gt } from "drizzle-orm";
 import { db, linkChecksTable, channelPostsTable } from "@workspace/db";
 import { logger } from "./logger";
-import { sendToChannel } from "./telegram-bot";
+import { sendToChannel, sendPollToChannel } from "./telegram-bot";
 import { formatDangerAlert } from "./posts-pool";
 import { contentHash } from "./content-utils";
 
@@ -84,6 +84,91 @@ async function publishNextStory(): Promise<void> {
   logger.warn("Stories: all stories already published — add new files");
 }
 
+// ─── Вечерний практический блок ───────────────────────────────────────────────
+// Формат: один пост в 18:30 МСК, тема зависит от дня недели:
+//   пн — разбор реального сообщения, вт — схема (3 красных флага),
+//   ср — опрос «проверь себя» (json), чт — слово дня, пт — чек-лист,
+//   сб — родительский уголок, вс — «мир за неделю».
+// Файлы: artifacts/api-server/evening/<weekday>/NNN-*.txt (или .json для опроса).
+
+const EVENING_DIR =
+  process.env["EVENING_DIR"]?.trim() ||
+  path.resolve(process.cwd(), "artifacts/api-server/evening");
+
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+function listEveningFiles(weekday: string): string[] {
+  try {
+    return fs
+      .readdirSync(path.join(EVENING_DIR, weekday))
+      .filter((name) => name.endsWith(".txt") || name.endsWith(".json"))
+      .sort();
+  } catch (err) {
+    logger.error({ err, weekday, dir: EVENING_DIR }, "Evening: cannot read directory");
+    return [];
+  }
+}
+
+async function publishEveningPost(): Promise<void> {
+  const now = new Date();
+  const weekday = WEEKDAYS[now.getDay()]!;
+  const files = listEveningFiles(weekday);
+  if (files.length === 0) {
+    logger.warn({ weekday }, "Evening: no posts for today — skipped");
+    return;
+  }
+
+  // Ротация по неделям: на каждой следующей неделе берём следующий файл.
+  const weekIndex = Math.floor(now.getTime() / (7 * 24 * 60 * 60 * 1000));
+  const file = files[weekIndex % files.length]!;
+  const dateKey = now.toISOString().slice(0, 10);
+  const hash = contentHash(`evening:${weekday}:${file}:${dateKey}`);
+
+  const existing = await db
+    .select({ id: channelPostsTable.id })
+    .from(channelPostsTable)
+    .where(eq(channelPostsTable.titleHash, hash))
+    .limit(1);
+  if (existing.length > 0) {
+    logger.info({ file }, "Evening: already published today, skipped");
+    return;
+  }
+
+  const fullPath = path.join(EVENING_DIR, weekday, file);
+  let ok = false;
+  let title = file;
+
+  if (file.endsWith(".json")) {
+    try {
+      const poll = JSON.parse(fs.readFileSync(fullPath, "utf-8")) as {
+        question: string;
+        options: string[];
+        correct?: number;
+      };
+      ok = await sendPollToChannel(poll.question, poll.options, poll.correct);
+      title = poll.question.slice(0, 120);
+    } catch (err) {
+      logger.error({ err, file }, "Evening: invalid poll json");
+      return;
+    }
+  } else {
+    const text = fs.readFileSync(fullPath, "utf-8").trim();
+    ok = await sendToChannel(text, CHECK_BUTTON);
+    title = storyTitle(text);
+  }
+
+  if (!ok) {
+    logger.error({ file }, "Evening: publish failed");
+    return;
+  }
+
+  await db
+    .insert(channelPostsTable)
+    .values({ postType: "evening", titleHash: hash, title, text: title })
+    .onConflictDoNothing();
+  logger.info({ weekday, file, title }, "Evening: published");
+}
+
 export function startScheduler(): void {
   // Одна история в день в 10:00 МСК (07:00 UTC).
   cron.schedule(
@@ -94,7 +179,19 @@ export function startScheduler(): void {
     { timezone: "UTC" }
   );
 
-  logger.info({ dir: STORIES_DIR }, "Scheduler started — daily story at 10:00 MSK");
+  // Вечерний практический пост в 18:30 МСК (15:30 UTC), ротация по дням недели.
+  cron.schedule(
+    "30 15 * * *",
+    () => {
+      void publishEveningPost().catch((err) => logger.error({ err }, "Evening: job failed"));
+    },
+    { timezone: "UTC" }
+  );
+
+  logger.info(
+    { storiesDir: STORIES_DIR, eveningDir: EVENING_DIR },
+    "Scheduler started — story 10:00 MSK, evening practice 18:30 MSK"
+  );
 }
 
 export async function checkAndAlertDangerousUrl(

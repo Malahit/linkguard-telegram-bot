@@ -109,6 +109,40 @@ export async function sendToChannel(
   }
 }
 
+// ─── Отправка опроса в канал ──────────────────────────────────────────────────────────────────
+
+export async function sendPollToChannel(
+  question: string,
+  options: string[],
+  correctOptionId?: number
+): Promise<boolean> {
+  if (!isConfigured()) {
+    logger.warn("Telegram bot not configured — missing TELEGRAM_BOT_TOKEN or OPENCLAW_CHANNEL_ID");
+    return false;
+  }
+  try {
+    const data = await tgCall("sendPoll", {
+      chat_id: CHANNEL_ID,
+      question,
+      options: options.map((text) => ({ text })),
+      is_anonymous: true,
+      type: "quiz",
+      ...(typeof correctOptionId === "number"
+        ? { correct_option_id: correctOptionId }
+        : { type: "regular" }),
+    });
+    if (!data.ok) {
+      logger.error({ description: data.description }, "Telegram channel poll error");
+      return false;
+    }
+    logger.info("Poll sent to channel");
+    return true;
+  } catch (err) {
+    logger.error({ err }, "Failed to send poll to channel");
+    return false;
+  }
+}
+
 // ─── Алерт админу о новом пользователе ──────────────────────────────────────────────────
 
 async function notifyAdminNewUser(

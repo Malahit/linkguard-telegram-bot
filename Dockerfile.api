@@ -55,6 +55,7 @@ RUN pnpm install --frozen-lockfile --prod --filter @workspace/api-server... 2>/d
 
 COPY --from=builder /app/artifacts/api-server/dist ./artifacts/api-server/dist
 COPY --from=builder /app/artifacts/api-server/stories ./artifacts/api-server/stories
+COPY --from=builder /app/artifacts/api-server/evening ./artifacts/api-server/evening
 COPY lib/db/drizzle.config.ts ./lib/db/
 COPY lib/db/src/ ./lib/db/src/
 
